@@ -45,16 +45,7 @@ from .data_loader import AlphaVantageLoader
 from .tsfm_forecaster import TSFMForecaster, TSFMForecast, get_forecaster
 from .portfolio_agent import PortfolioWeightAgent, PortfolioDecision, PortfolioState
 from .simulator import PortfolioSimulator, SimulationResult
-
-# LLM导入
-_QWEN_AVAILABLE = False
-LocalQwenChat = None
-
-try:
-    from tradingagents.llms.local_qwen import LocalQwenChat
-    _QWEN_AVAILABLE = True
-except ImportError:
-    pass
+from .lmstudio_openai_chat import LMStudioOpenAIChat
 
 
 class MockLLM:
@@ -116,13 +107,12 @@ class ExperimentRunner:
         if use_mock_llm:
             print("Using MockLLM for debugging...")
             self.llm = MockLLM(model_name="mock")
-        elif _QWEN_AVAILABLE:
-            # 设置温度为0以确保实验可复现
-            self.llm = LocalQwenChat(model_name=llm_model, temperature=0.0)
         else:
-            raise ImportError(
-                "LocalQwenChat不可用。请确保已正确安装tradingagents.llms.local_qwen模块。"
-                "本项目仅支持使用Qwen模型。"
+            self.llm = LMStudioOpenAIChat(
+                model_name=llm_model,
+                base_url=EXPERIMENT_CONFIG["lmstudio_base_url"],
+                api_key=EXPERIMENT_CONFIG.get("lmstudio_api_key"),
+                temperature=0.0,
             )
         
         # 初始化组件

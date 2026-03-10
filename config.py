@@ -22,9 +22,11 @@ EXPERIMENT_CONFIG = {
     "tickers": ASSET_TICKERS,  # 包含 CASH
     
     # LLM 配置
-    "debug_llm": "Qwen/Qwen3-4B-Instruct-2507",
-    "production_llm": "/Users/linqilan/.lmstudio/models/lmstudio-community/Qwen3-32B-MLX-8bit",
-    "llm_provider": "qwen",
+    "debug_llm": os.getenv("LM_STUDIO_DEBUG_MODEL", "Qwen/Qwen3-4B-Instruct-2507"),
+    "production_llm": os.getenv("LM_STUDIO_MODEL", "qwen/qwen3-32b"),
+    "llm_provider": "lmstudio",
+    "lmstudio_base_url": os.getenv("LM_STUDIO_BASE_URL", "http://127.0.0.1:1234/v1"),
+    "lmstudio_api_key": os.getenv("LM_STUDIO_API_KEY"),
     
     # TSFM 配置
     "tsfm_model": "amazon/chronos-2",
