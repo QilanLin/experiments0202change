@@ -46,6 +46,7 @@ from .tsfm_forecaster import TSFMForecaster, TSFMForecast, get_forecaster
 from .portfolio_agent import PortfolioWeightAgent, PortfolioDecision, PortfolioState
 from .simulator import PortfolioSimulator, SimulationResult
 from .lmstudio_openai_chat import LMStudioOpenAIChat
+from tradingagents_tsfm_modified_v5.tradingagents.llms.local_qwen import LocalQwenChat
 
 
 class MockLLM:
@@ -103,10 +104,17 @@ class ExperimentRunner:
             else EXPERIMENT_CONFIG["production_llm"]
         )
         
+        llm_provider = EXPERIMENT_CONFIG.get("llm_provider", "qwen")
+
         # 初始化LLM
         if use_mock_llm:
             print("Using MockLLM for debugging...")
             self.llm = MockLLM(model_name="mock")
+        elif llm_provider == "qwen":
+            self.llm = LocalQwenChat(
+                model_name=llm_model,
+                temperature=0.0,
+            )
         else:
             self.llm = LMStudioOpenAIChat(
                 model_name=llm_model,
