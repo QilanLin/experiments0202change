@@ -3,6 +3,7 @@ TimeFM Forecaster - 封装 TimeFM 模型为与 Chronos 兼容的接口
 """
 
 import math
+import os
 from dataclasses import dataclass
 from typing import List, Optional, Sequence, Dict, Any
 
@@ -13,10 +14,19 @@ import pandas as pd
 try:
     import torch
     import timesfm
+    from huggingface_hub import snapshot_download
+    from safetensors.torch import load_file as load_safetensors_file
+    try:
+        from transformers import TimesFmModelForPrediction
+    except ImportError:
+        TimesFmModelForPrediction = None
     _TIMESFM_AVAILABLE = True
 except ImportError:
     torch = None
     timesfm = None
+    snapshot_download = None
+    load_safetensors_file = None
+    TimesFmModelForPrediction = None
     _TIMESFM_AVAILABLE = False
 
 
@@ -60,6 +70,14 @@ def _round_up(x: int, base: int) -> int:
     return int(math.ceil(x / base) * base)
 
 
+def _nearest_supported_quantile(
+    quantile: float, supported: Sequence[float]
+) -> float:
+    """Map unsupported quantiles to the closest quantile exposed by TimesFM."""
+    q = round(float(quantile), 2)
+    return min((float(s) for s in supported), key=lambda s: abs(s - q))
+
+
 @dataclass
 class TimesFMConfig:
     # HuggingFace 上的官方 checkpoint
@@ -97,6 +115,54 @@ class TimesFMForecaster:
             self.cfg.device = device
         self._model = None
         self._compiled = False
+        # Prefer the official TimesFM 2.5 torch API when available. The
+        # transformers TimesFM implementation does not currently load the
+        # google/timesfm-2.5-200m-pytorch checkpoint cleanly in this setup.
+        self._legacy_api = hasattr(timesfm, "TimesFM_2p5_200M_torch")
+        self._use_transformers_model = TimesFmModelForPrediction is not None and not self._legacy_api
+        # TimesFM checkpoints expose 0.1..0.9 quantiles; we map requested
+        # quantiles to the nearest supported value when needed.
+        self._supported_quantiles = tuple(round(i / 10, 1) for i in range(1, 10))
+
+    def _patch_timesfm_torch_loader(self):
+        """Make newer TimesFmTorch loaders accept HF safetensors checkpoints."""
+        if self._legacy_api:
+            return
+
+        loader = timesfm.timesfm_torch.TimesFmTorch.load_from_checkpoint
+        if getattr(loader, "_supports_safetensors", False):
+            return
+
+        def _patched_load_from_checkpoint(model, checkpoint):
+            checkpoint_path = checkpoint.path
+            repo_id = checkpoint.huggingface_repo_id
+            if checkpoint_path is None:
+                snapshot_dir = snapshot_download(
+                    repo_id,
+                    local_dir=checkpoint.local_dir,
+                )
+                checkpoint_path = os.path.join(snapshot_dir, "torch_model.ckpt")
+                safetensors_path = os.path.join(snapshot_dir, "model.safetensors")
+            else:
+                safetensors_path = checkpoint_path.replace("torch_model.ckpt", "model.safetensors")
+
+            model._model = timesfm.timesfm_torch.ppd.PatchedTimeSeriesDecoder(model._model_config)
+            if os.path.exists(checkpoint_path):
+                loaded_checkpoint = torch.load(checkpoint_path, weights_only=True)
+            elif os.path.exists(safetensors_path):
+                loaded_checkpoint = load_safetensors_file(safetensors_path)
+            else:
+                raise FileNotFoundError(
+                    f"Neither torch_model.ckpt nor model.safetensors found for TimesFM checkpoint "
+                    f"under repo {repo_id!r}"
+                )
+
+            model._model.load_state_dict(loaded_checkpoint)
+            model._model.to(model._device)
+            model._model.eval()
+
+        _patched_load_from_checkpoint._supports_safetensors = True
+        timesfm.timesfm_torch.TimesFmTorch.load_from_checkpoint = _patched_load_from_checkpoint
 
     def _lazy_init(self):
         if self._model is not None and self._compiled:
@@ -109,28 +175,68 @@ class TimesFMForecaster:
             else:
                 self.cfg.device = "cpu"
 
-        # 加载模型
-        # TimesFM 官方示例：timesfm.TimesFM_2p5_200M_torch.from_pretrained(...)
-        self._model = timesfm.TimesFM_2p5_200M_torch.from_pretrained(self.cfg.model_id)
-
-        # TimesFM 2.5 的 patch 约束：context 通常需对齐 patch_len(32)，horizon 对齐 output_patch_len(128)；
-        # 其 compile 内部也会自动向上取整，但我们提前做一层保守处理，减少意外。
-        # 这里用保守基数：context_base=32, horizon_base=128
         max_context = _round_up(int(self.cfg.max_context), 32)
         max_horizon = _round_up(int(self.cfg.max_horizon), 128)
 
-        fc = timesfm.ForecastConfig(
-            max_context=max_context,
-            max_horizon=max_horizon,
-            normalize_inputs=self.cfg.normalize_inputs,
-            use_continuous_quantile_head=self.cfg.use_continuous_quantile_head,
-            force_flip_invariance=self.cfg.force_flip_invariance,
-            infer_is_positive=self.cfg.infer_is_positive,
-            fix_quantile_crossing=self.cfg.fix_quantile_crossing,
-            return_backcast=self.cfg.return_backcast,
-        )
+        if self._use_transformers_model:
+            self._model = TimesFmModelForPrediction.from_pretrained(self.cfg.model_id)
+            self._model.to(self.cfg.device)
+            self._model.eval()
+            config_quantiles = getattr(self._model.config, "quantiles", None)
+            if config_quantiles:
+                self._supported_quantiles = tuple(round(float(q), 2) for q in config_quantiles)
+        elif self._legacy_api:
+            # Older TimesFM package exposes the 2.5 torch checkpoint via a
+            # convenience class plus ForecastConfig/compile.
+            snapshot_dir = snapshot_download(
+                self.cfg.model_id,
+                local_files_only=True,
+            )
+            self._model = timesfm.TimesFM_2p5_200M_torch._from_pretrained(
+                model_id=snapshot_dir,
+                revision=None,
+                cache_dir=None,
+                force_download=False,
+                local_files_only=True,
+                token=None,
+                config=None,
+            )
 
-        self._model.compile(fc)
+            fc = timesfm.ForecastConfig(
+                max_context=max_context,
+                max_horizon=max_horizon,
+                normalize_inputs=self.cfg.normalize_inputs,
+                use_continuous_quantile_head=self.cfg.use_continuous_quantile_head,
+                force_flip_invariance=self.cfg.force_flip_invariance,
+                infer_is_positive=self.cfg.infer_is_positive,
+                fix_quantile_crossing=self.cfg.fix_quantile_crossing,
+                return_backcast=self.cfg.return_backcast,
+            )
+
+            self._model.compile(fc)
+        else:
+            # timesfm>=1.3.0 exposes a unified TimesFm API that is initialized
+            # with hparams + checkpoint instead of from_pretrained/compile.
+            self._patch_timesfm_torch_loader()
+            backend = "gpu" if self.cfg.device and self.cfg.device.startswith("cuda") else "cpu"
+            hparams = timesfm.TimesFmHparams(
+                context_len=max_context,
+                horizon_len=max_horizon,
+                input_patch_len=32,
+                output_patch_len=128,
+                num_layers=20,
+                num_heads=16,
+                model_dims=1280,
+                backend=backend,
+                quantiles=self._supported_quantiles,
+                point_forecast_mode="median",
+            )
+            checkpoint = timesfm.TimesFmCheckpoint(
+                version="torch",
+                huggingface_repo_id=self.cfg.model_id,
+            )
+            self._model = timesfm.TimesFm(hparams=hparams, checkpoint=checkpoint)
+
         self._compiled = True
 
     def predict_df(
@@ -152,14 +258,13 @@ class TimesFMForecaster:
         if quantile_levels is None:
             quantile_levels = [0.1, 0.5, 0.9]
 
-        # TimesFM 的 quantile_forecast shape: (N, horizon, 10)
-        # index 0 是 mean；index 1..9 对应 0.1..0.9
-        supported = {round(i / 10, 1) for i in range(1, 10)}
-        for q in quantile_levels:
-            q_ = float(q)
-            q_ = round(q_, 1)
-            if q_ not in supported:
-                raise ValueError(f"TimesFM only supports quantiles in {sorted(supported)}; got {q}")
+        # TimesFM checkpoints expose 0.1..0.9 quantiles. For code paths that
+        # ask for 0.05 / 0.95 etc, map to the nearest supported quantile so the
+        # rest of the pipeline can proceed.
+        quantile_map = {
+            round(float(q), 2): _nearest_supported_quantile(q, self._supported_quantiles)
+            for q in quantile_levels
+        }
 
         # 兼容单序列：如果没有 id_column，就当作一个 id=0
         df = context_df.copy()
@@ -186,9 +291,8 @@ class TimesFMForecaster:
             last_timestamps.append(last_ts)
             deltas.append(_infer_freq_from_group(ts))
 
-        # 确保 compile 覆盖 prediction_length（如果超出 max_horizon，则重新 compile 更大的 max_horizon）
-        if prediction_length > int(self._model.forecast_config.max_horizon):
-            # 重新 compile（增量：仅在需要时发生）
+        # 如果请求的 horizon 超出当前模型配置，重新初始化一个更大的 horizon。
+        if prediction_length > int(self.cfg.max_horizon):
             new_cfg = TimesFMConfig(**{**self.cfg.__dict__})
             new_cfg.max_horizon = _round_up(prediction_length, 128)
             self.cfg = new_cfg
@@ -196,12 +300,41 @@ class TimesFMForecaster:
             self._compiled = False
             self._lazy_init()
 
-        point_forecast, quantile_forecast = self._model.forecast(
-            horizon=int(prediction_length),
-            inputs=inputs_list,
-        )
-        # point_forecast: (N, H)
-        # quantile_forecast: (N, H, 10)
+        max_context_len = _round_up(int(self.cfg.max_context), 32)
+
+        if self._use_transformers_model:
+            max_supported_horizon = int(getattr(self._model.config, "horizon_length", prediction_length))
+            if prediction_length > max_supported_horizon:
+                raise ValueError(
+                    f"TimesFM transformers checkpoint only supports horizon_length <= {max_supported_horizon}; "
+                    f"got {prediction_length}"
+                )
+
+            device = next(self._model.parameters()).device
+            past_values = [
+                torch.tensor(ts, dtype=torch.float32, device=device)
+                for ts in inputs_list
+            ]
+            freq = torch.zeros(len(inputs_list), dtype=torch.long, device=device)
+            with torch.no_grad():
+                outputs = self._model(
+                    past_values=past_values,
+                    freq=freq,
+                    forecast_context_len=min(max_context_len, max(len(ts) for ts in inputs_list)),
+                )
+            point_forecast = outputs.mean_predictions.detach().cpu().numpy()[:, :prediction_length]
+            quantile_forecast = outputs.full_predictions.detach().cpu().numpy()[:, :prediction_length, :]
+        elif self._legacy_api:
+            point_forecast, quantile_forecast = self._model.forecast(
+                horizon=int(prediction_length),
+                inputs=inputs_list,
+            )
+        else:
+            point_forecast, quantile_forecast = self._model.forecast(inputs=inputs_list)
+            point_forecast = point_forecast[:, :prediction_length]
+            quantile_forecast = quantile_forecast[:, :prediction_length, :]
+        # quantile_forecast: (N, H, 10) -> index 0 is mean, 1..9 are quantiles
+        # aligned with self._supported_quantiles.
 
         # 组装输出 pred_df
         out_frames = []
@@ -218,8 +351,9 @@ class TimesFMForecaster:
             )
 
             for q in quantile_levels:
-                q_ = round(float(q), 1)
-                q_idx = int(q_ * 10)  # 0.1->1, 0.5->5, 0.9->9
+                q_ = round(float(q), 2)
+                supported_q = quantile_map[q_]
+                q_idx = 1 + self._supported_quantiles.index(supported_q)
                 pred[f"{q_:.1f}"] = quantile_forecast[i, :, q_idx]
 
             out_frames.append(pred)
