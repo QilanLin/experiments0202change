@@ -526,6 +526,8 @@ class TSFMForecaster:
             ticker: str,
             forecast_date: str,
             save_input: bool = True,
+            input_subdir: Optional[str] = None,
+            log_input_save: bool = True,
     ) -> TSFMForecast:
         """生成所有8种格式的预测"""
         result = TSFMForecast(
@@ -559,13 +561,17 @@ class TSFMForecaster:
                 "last_value": float(context_df["target"].iloc[-1]) if len(context_df) > 0 else None
             }
             if save_input:
-                os.makedirs(self.input_dir, exist_ok=True)
+                target_input_dir = self.input_dir
+                if input_subdir:
+                    target_input_dir = os.path.join(self.input_dir, input_subdir)
+                os.makedirs(target_input_dir, exist_ok=True)
                 input_filename = os.path.join(
-                    self.input_dir, f"tsfm_input_{ticker}_{forecast_date}.json"
+                    target_input_dir, f"tsfm_input_{ticker}_{forecast_date}.json"
                 )
                 with open(input_filename, 'w', encoding='utf-8') as f:
                     json.dump(context_dict, f, indent=2, default=str)
-                print(f"[INFO] TSFM输入已保存到: {input_filename}")
+                if log_input_save:
+                    print(f"[INFO] TSFM输入已保存到: {input_filename}")
 
             if self.use_mock:
                 result = self._generate_mock_forecast(result, last_close)

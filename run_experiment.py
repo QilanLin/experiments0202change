@@ -143,7 +143,7 @@ class ExperimentRunner:
         self._fundamentals: Dict[str, Dict] = {}
         self._tsfm_forecasts: Dict[str, Dict[str, TSFMForecast]] = {}
         self._price_history_cache: Dict[str, pd.DataFrame] = {}
-        self._historical_1d_forecast_cache: Dict[str, Dict[str, Optional[float]]] = {}
+        self._historical_1d_forecast_cache: Dict[str, Dict[str, Optional[Dict[str, Any]]]] = {}
         
         # 结果目录
         self.run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -225,7 +225,7 @@ class ExperimentRunner:
         self._price_history_cache[ticker] = hist
         return hist
 
-    def _get_cached_historical_1d_prediction(self, ticker: str, origin_dt: pd.Timestamp) -> Optional[float]:
+    def _get_cached_historical_1d_prediction(self, ticker: str, origin_dt: pd.Timestamp) -> Optional[Dict[str, Any]]:
         """
         返回某个历史日期 origin_dt 上，基于当时可见信息生成的 1D 预测收益率。
         结果会缓存，避免 format_7a / format_7b 在多个决策日重复回放同一历史日期。
@@ -243,17 +243,27 @@ class ExperimentRunner:
 
         prices = df_upto["close"].astype(float)
         prices.index = pd.to_datetime(df_upto["date"])
+        historical_input_subdir = os.path.join("historical_reliability", ticker)
+        historical_input_relative_path = os.path.join(
+            historical_input_subdir,
+            f"tsfm_input_{ticker}_{origin_date}.json",
+        )
         forecast = self.tsfm_forecaster.forecast_all_formats(
             prices,
             ticker,
             origin_date,
-            save_input=False,
+            save_input=True,
+            input_subdir=historical_input_subdir,
+            log_input_save=False,
         )
         if forecast.status == "error" or forecast.ratio_1d is None:
             cache[origin_date] = None
             return None
 
-        cache[origin_date] = float(forecast.ratio_1d)
+        cache[origin_date] = {
+            "predicted_return_1d": float(forecast.ratio_1d),
+            "tsfm_input_path": historical_input_relative_path,
+        }
         return cache[origin_date]
 
     def _compute_historical_reliability(self, ticker: str, forecast_date: str) -> Dict[str, Dict[str, Any]]:
@@ -298,9 +308,10 @@ class ExperimentRunner:
             origin_row = hist.iloc[origin_idx]
             target_row = hist.iloc[origin_idx + 1]
             origin_dt = pd.to_datetime(origin_row["date"])
-            pred_ratio = self._get_cached_historical_1d_prediction(ticker, origin_dt)
-            if pred_ratio is None:
+            pred_record = self._get_cached_historical_1d_prediction(ticker, origin_dt)
+            if pred_record is None:
                 continue
+            pred_ratio = float(pred_record["predicted_return_1d"])
 
             p_t = float(origin_row["close"])
             p_true = float(target_row["close"])
@@ -314,6 +325,7 @@ class ExperimentRunner:
                     "predicted_return_1d": float(pred_ratio),
                     "realized_return_1d": float(true_ratio),
                     "squared_error": float(sq_err),
+                    "tsfm_input_path": pred_record.get("tsfm_input_path"),
                 }
             )
             squared_errors.append(float(sq_err))
