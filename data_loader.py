@@ -11,6 +11,7 @@ import os
 import json
 import time
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Dict, Any, List, Optional
 import pandas as pd
 import requests
@@ -81,6 +82,111 @@ class AlphaVantageLoader:
         else:
             with open(cache_path, 'w') as f:
                 json.dump(data, f, indent=2)
+
+    def _normalize_price_cache_df(self, df: pd.DataFrame) -> Optional[pd.DataFrame]:
+        """将任意历史价格缓存标准化为包含 date/close 的 DataFrame。"""
+        if df is None or df.empty:
+            return None
+
+        if 'timestamp' in df.columns:
+            date_col = 'timestamp'
+        elif 'date' in df.columns:
+            date_col = 'date'
+        elif 'Date' in df.columns:
+            date_col = 'Date'
+        else:
+            return None
+
+        normalized = df.copy()
+        normalized[date_col] = pd.to_datetime(normalized[date_col], errors='coerce')
+        normalized = normalized.dropna(subset=[date_col])
+        if normalized.empty:
+            return None
+
+        if 'adjusted_close' in normalized.columns:
+            if 'close' in normalized.columns:
+                normalized['raw_close'] = normalized['close'].copy()
+            normalized['close'] = normalized['adjusted_close'].copy()
+        elif 'adjusted close' in normalized.columns:
+            if 'close' in normalized.columns:
+                normalized['raw_close'] = normalized['close'].copy()
+            normalized['close'] = normalized['adjusted close'].copy()
+
+        if 'close' not in normalized.columns:
+            return None
+
+        normalized['close'] = pd.to_numeric(normalized['close'], errors='coerce')
+        normalized = normalized.dropna(subset=['close'])
+        if normalized.empty:
+            return None
+
+        normalized = normalized.rename(columns={date_col: 'date'})
+        normalized = normalized.sort_values('date').reset_index(drop=True)
+        return normalized
+
+    def _load_best_local_price_cache(
+        self,
+        ticker: str,
+        start_date: str,
+        end_date: str,
+    ) -> Optional[pd.DataFrame]:
+        """
+        在本地 price 缓存目录中扫描任意与 ticker 匹配的 CSV，
+        返回一个能够覆盖目标日期范围的最佳候选，避免因缓存命名不同而回退到在线 API。
+        """
+        price_dir = Path(self.cache_dir) / "price"
+        if not price_dir.exists():
+            return None
+
+        start_dt = pd.to_datetime(start_date)
+        end_dt = pd.to_datetime(end_date)
+        candidates = []
+
+        for cache_file in sorted(price_dir.glob(f"{ticker}*.csv")):
+            try:
+                normalized = self._normalize_price_cache_df(pd.read_csv(cache_file))
+            except Exception:
+                continue
+            if normalized is None or normalized.empty:
+                continue
+
+            file_start = normalized['date'].min()
+            file_end = normalized['date'].max()
+            covers_range = file_start <= start_dt and file_end >= end_dt
+            overlaps_range = file_end >= start_dt and file_start <= end_dt
+            if not overlaps_range:
+                continue
+
+            sliced = normalized[(normalized['date'] >= start_dt) & (normalized['date'] <= end_dt)].copy()
+            if sliced.empty:
+                continue
+
+            candidates.append(
+                {
+                    "path": str(cache_file),
+                    "df": sliced.reset_index(drop=True),
+                    "covers_range": covers_range,
+                    "rows": len(sliced),
+                    "file_start": file_start,
+                    "file_end": file_end,
+                }
+            )
+
+        if not candidates:
+            return None
+
+        candidates.sort(
+            key=lambda item: (
+                item["covers_range"],
+                item["rows"],
+                item["file_end"],
+                item["file_start"],
+            ),
+            reverse=True,
+        )
+        best = candidates[0]
+        print(f"  Using local cached prices for {ticker} from {best['path']}")
+        return best["df"]
     
     def get_daily_prices(
         self, 
@@ -106,6 +212,9 @@ class AlphaVantageLoader:
             cached = self._load_from_cache(cache_path)
             if cached is not None:
                 return cached
+            best_local_cache = self._load_best_local_price_cache(ticker, start_date, end_date)
+            if best_local_cache is not None:
+                return best_local_cache
         
         # API请求 - 使用免费可用的日线接口。
         # 注意：TIME_SERIES_DAILY_ADJUSTED 和 outputsize=full 在当前免费 key 下都会触发 premium 限制。
