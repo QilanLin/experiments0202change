@@ -1,14 +1,15 @@
 """
 TSFM Forecaster - Chronos-2 多格式预测模块
 
-支持7种输出格式：
+支持8种输出格式：
 1. 数字，接下来30天
 2. 比例，接下来30天
 3. 比例，1天/1周/2周/3周/4周
 4. 数字，分位数 {0.05, 0.25, 0.5, 0.75, 0.95}，30天
 5. 比例，分位数，30天
 6. 比例，分位数，多时间窗口
-7. 比例，多时间窗口 + 历史可靠性
+7a. 比例，多时间窗口 + 过去7个已兑现1D预测MSE
+7b. 比例，多时间窗口 + 过去7个已兑现1D预测MSE + 归一化分数
 """
 
 from __future__ import annotations
@@ -126,7 +127,7 @@ class TSFMForecast:
     # 格式6: 比例，分位数，多时间窗口
     ratio_quantile_multi: Optional[Dict[str, Dict[str, float]]] = None
 
-    # 格式7: 历史可靠性（基于过去7个已兑现的1D forecast）
+    # 格式7a/7b: 历史可靠性（基于过去7个已兑现的1D forecast）
     historical_reliability: Optional[Dict[str, Any]] = None
 
     # 元数据
@@ -526,7 +527,7 @@ class TSFMForecaster:
             forecast_date: str,
             save_input: bool = True,
     ) -> TSFMForecast:
-        """生成所有7种格式的预测"""
+        """生成所有8种格式的预测"""
         result = TSFMForecast(
             ticker=ticker,
             forecast_date=forecast_date,
@@ -774,8 +775,8 @@ class TSFMForecaster:
                     f"  {horizon}: [{q05 * 100:.1f}% {expl_05}, {q50 * 100:.1f}% {expl_50}, {q95 * 100:.1f}% {expl_95}]")
             return "\n".join(lines)
 
-        elif format_type == 7:
-            # 格式7: 多时间窗口收益 + 过去7个已兑现1D预测的可靠性摘要
+        elif format_type in (7, 8):
+            # 格式7a/7b: 多时间窗口收益 + 过去7个已兑现1D预测的可靠性摘要
             if forecast.ratio_1d is None:
                 return f"TSFM Forecast for {ticker} (multi-horizon returns + reliability):\n" \
                        f"Status: {forecast.status}\n" \
@@ -800,15 +801,17 @@ class TSFMForecaster:
             n = int(reliability.get("n", 0))
             if n == 0:
                 lines.append("Past 7 resolved 1D forecast MSE: insufficient history")
-                lines.append("Normalized Reliability Score: insufficient history")
+                if format_type == 8:
+                    lines.append("Normalized Reliability Score: insufficient history")
                 lines.append("Sample Count: 0/7")
                 return "\n".join(lines)
 
             mse = float(reliability.get("mse", 0.0))
-            score = float(reliability.get("normalized_reliability_score", 0.0))
             window_size = int(reliability.get("window_size", 7))
             lines.append(f"Past 7 resolved 1D forecast MSE: {mse * 10000:.4f} bp^2")
-            lines.append(f"Normalized Reliability Score: {score:.3f}")
+            if format_type == 8:
+                score = float(reliability.get("normalized_reliability_score", 0.0))
+                lines.append(f"Normalized Reliability Score: {score:.3f}")
             lines.append(f"Sample Count: {n}/{window_size}")
             return "\n".join(lines)
 

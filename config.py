@@ -42,7 +42,8 @@ EXPERIMENT_CONFIG = {
         "format_4": "numeric_quantile_30d",  # 数字，分位数，30天
         "format_5": "ratio_quantile_30d",    # 比例，分位数，30天
         "format_6": "ratio_quantile_multi",  # 比例，分位数，多时间窗口
-        "format_7": "ratio_multi_horizon_with_reliability",  # 比例，多时间窗口 + 历史可靠性
+        "format_7a": "ratio_multi_horizon_with_mse",                # 比例，多时间窗口 + 过去7个已兑现1D预测MSE
+        "format_7b": "ratio_multi_horizon_with_mse_and_score",      # 比例，多时间窗口 + MSE + 归一化分数
     },
     "tsfm_reliability_window_size": 7,
     "tsfm_reliability_metrics": [
@@ -67,7 +68,8 @@ class ExperimentType:
     LLM_TSFM_FORMAT_4 = "llm_tsfm_format_4"
     LLM_TSFM_FORMAT_5 = "llm_tsfm_format_5"
     LLM_TSFM_FORMAT_6 = "llm_tsfm_format_6"
-    LLM_TSFM_FORMAT_7 = "llm_tsfm_format_7"
+    LLM_TSFM_FORMAT_7A = "llm_tsfm_format_7a"
+    LLM_TSFM_FORMAT_7B = "llm_tsfm_format_7b"
 
 
 def get_experiment_dir(experiment_type: str, run_id: str = None) -> str:

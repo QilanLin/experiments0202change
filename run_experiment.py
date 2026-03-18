@@ -8,6 +8,8 @@ Run Experiment - 实验运行主脚本
     python -m experiments.run_experiment --type tsfm_format_3 --model timesfm
     python -m experiments.run_experiment --type tsfm_format_3 --model moirai2
     python -m experiments.run_experiment --type tsfm_format_3 --model toto
+    python -m experiments.run_experiment --type tsfm_7a --model chronos
+    python -m experiments.run_experiment --type tsfm_7b --model chronos
 """
 
 from __future__ import annotations
@@ -226,7 +228,7 @@ class ExperimentRunner:
     def _get_cached_historical_1d_prediction(self, ticker: str, origin_dt: pd.Timestamp) -> Optional[float]:
         """
         返回某个历史日期 origin_dt 上，基于当时可见信息生成的 1D 预测收益率。
-        结果会缓存，避免 format_7 在多个决策日重复回放同一历史日期。
+        结果会缓存，避免 format_7a / format_7b 在多个决策日重复回放同一历史日期。
         """
         cache = self._historical_1d_forecast_cache.setdefault(ticker, {})
         origin_date = pd.to_datetime(origin_dt).strftime("%Y-%m-%d")
@@ -256,7 +258,7 @@ class ExperimentRunner:
 
     def _compute_historical_reliability(self, ticker: str, forecast_date: str) -> Dict[str, Dict[str, Any]]:
         """
-        为 format_7 计算“过去7个已兑现 1D 预测”的可靠性摘要。
+        为 format_7a / format_7b 计算“过去7个已兑现 1D 预测”的可靠性摘要。
 
         口径：
         - 在当前决策日 forecast_date 之前，取最近 7 个已经兑现的一日预测起点；
@@ -378,7 +380,7 @@ class ExperimentRunner:
             forecast = self.tsfm_forecaster.forecast_all_formats(
                 prices, ticker, forecast_date
             )
-            if self.tsfm_format == 7:
+            if self.tsfm_format in (7, 8):
                 forecast.historical_reliability = self._compute_historical_reliability(
                     ticker=ticker,
                     forecast_date=forecast_date,
@@ -595,7 +597,7 @@ def main():
         "--type", 
         type=str, 
         default="baseline",
-        choices=["baseline", "tsfm_1", "tsfm_2", "tsfm_3", "tsfm_4", "tsfm_5", "tsfm_6", "tsfm_7"],
+        choices=["baseline", "tsfm_1", "tsfm_2", "tsfm_3", "tsfm_4", "tsfm_5", "tsfm_6", "tsfm_7a", "tsfm_7b"],
         help="Experiment type"
     )
     parser.add_argument("--debug", action="store_true", help="Use debug LLM (smaller model)")
@@ -622,7 +624,8 @@ def main():
         "tsfm_4": (ExperimentType.LLM_TSFM_FORMAT_4, 4),
         "tsfm_5": (ExperimentType.LLM_TSFM_FORMAT_5, 5),
         "tsfm_6": (ExperimentType.LLM_TSFM_FORMAT_6, 6),
-        "tsfm_7": (ExperimentType.LLM_TSFM_FORMAT_7, 7),
+        "tsfm_7a": (ExperimentType.LLM_TSFM_FORMAT_7A, 7),
+        "tsfm_7b": (ExperimentType.LLM_TSFM_FORMAT_7B, 8),
     }
     
     experiment_type, tsfm_format = type_mapping[args.type]
