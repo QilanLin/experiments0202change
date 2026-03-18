@@ -141,6 +141,7 @@ class ExperimentRunner:
         self._fundamentals: Dict[str, Dict] = {}
         self._tsfm_forecasts: Dict[str, Dict[str, TSFMForecast]] = {}
         self._price_history_cache: Dict[str, pd.DataFrame] = {}
+        self._historical_1d_forecast_cache: Dict[str, Dict[str, Optional[float]]] = {}
         
         # 结果目录
         self.run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -222,80 +223,118 @@ class ExperimentRunner:
         self._price_history_cache[ticker] = hist
         return hist
 
-    def _extract_predicted_ratio_for_horizon(self, forecast: TSFMForecast, horizon_key: str) -> Optional[float]:
-        horizon_to_attr = {
-            "1d": "ratio_1d",
-            "1w": "ratio_1w",
-            "2w": "ratio_2w",
-            "3w": "ratio_3w",
-            "4w": "ratio_4w",
-        }
-        attr = horizon_to_attr[horizon_key]
-        value = getattr(forecast, attr, None)
-        return float(value) if value is not None else None
-
-    def _compute_historical_reliability(self, ticker: str, forecast_date: str) -> Dict[str, Dict[str, float]]:
+    def _get_cached_historical_1d_prediction(self, ticker: str, origin_dt: pd.Timestamp) -> Optional[float]:
         """
-        基于当前 forecast_date 之前已经解析、且在当前日期前已“兑现”的历史 forecast，
-        计算各 horizon 的方向准确率和收益率 MSE。
+        返回某个历史日期 origin_dt 上，基于当时可见信息生成的 1D 预测收益率。
+        结果会缓存，避免 format_7 在多个决策日重复回放同一历史日期。
+        """
+        cache = self._historical_1d_forecast_cache.setdefault(ticker, {})
+        origin_date = pd.to_datetime(origin_dt).strftime("%Y-%m-%d")
+        if origin_date in cache:
+            return cache[origin_date]
+
+        hist = self._get_price_history_df(ticker)
+        df_upto = hist[hist["date"] <= pd.to_datetime(origin_dt)].copy()
+        if len(df_upto) < 30:
+            cache[origin_date] = None
+            return None
+
+        prices = df_upto["close"].astype(float)
+        prices.index = pd.to_datetime(df_upto["date"])
+        forecast = self.tsfm_forecaster.forecast_all_formats(
+            prices,
+            ticker,
+            origin_date,
+            save_input=False,
+        )
+        if forecast.status == "error" or forecast.ratio_1d is None:
+            cache[origin_date] = None
+            return None
+
+        cache[origin_date] = float(forecast.ratio_1d)
+        return cache[origin_date]
+
+    def _compute_historical_reliability(self, ticker: str, forecast_date: str) -> Dict[str, Dict[str, Any]]:
+        """
+        为 format_7 计算“过去7个已兑现 1D 预测”的可靠性摘要。
+
+        口径：
+        - 在当前决策日 forecast_date 之前，取最近 7 个已经兑现的一日预测起点；
+        - 对每个历史起点 s，仅使用 s 当天及之前的数据重新生成 1D forecast；
+        - 计算预测收益率与真实次日收益率之间的 MSE；
+        - 同时给一个 0~1 的归一化 reliability score，便于 LLM 理解。
         """
         hist = self._get_price_history_df(ticker)
         current_dt = pd.to_datetime(forecast_date)
-        reliability: Dict[str, Dict[str, float]] = {}
-        max_samples = int(EXPERIMENT_CONFIG.get("tsfm_reliability_max_samples_per_horizon", 20))
+        current_rows = hist.index[hist["date"] == current_dt]
+        window_size = int(EXPERIMENT_CONFIG.get("tsfm_reliability_window_size", 7))
 
-        past_forecasts: List[tuple[pd.Timestamp, TSFMForecast]] = []
-        for date_str in sorted(self._tsfm_forecasts.keys()):
-            date_dt = pd.to_datetime(date_str)
-            if date_dt >= current_dt:
+        summary = {
+            "window_size": window_size,
+            "n": 0,
+            "mse": 0.0,
+            "normalized_mse": 0.0,
+            "normalized_reliability_score": 0.0,
+            "samples": [],
+        }
+
+        if len(current_rows) == 0:
+            return {"past_7_resolved_1d": summary}
+
+        current_idx = int(current_rows[0])
+        if current_idx == 0:
+            return {"past_7_resolved_1d": summary}
+
+        start_idx = max(0, current_idx - window_size)
+        origin_indices = list(range(start_idx, current_idx))
+
+        samples: List[Dict[str, Any]] = []
+        squared_errors: List[float] = []
+        realized_sq_returns: List[float] = []
+
+        for origin_idx in origin_indices:
+            origin_row = hist.iloc[origin_idx]
+            target_row = hist.iloc[origin_idx + 1]
+            origin_dt = pd.to_datetime(origin_row["date"])
+            pred_ratio = self._get_cached_historical_1d_prediction(ticker, origin_dt)
+            if pred_ratio is None:
                 continue
-            forecast = self._tsfm_forecasts.get(date_str, {}).get(ticker)
-            if forecast is not None and forecast.status != "error":
-                past_forecasts.append((date_dt, forecast))
 
-        for horizon_key, offset in self.tsfm_forecaster.HORIZONS.items():
-            samples = []
-            for past_dt, past_forecast in reversed(past_forecasts):
-                row_match = hist.index[hist['date'] == past_dt]
-                if len(row_match) == 0:
-                    continue
-                start_idx = int(row_match[0])
-                target_idx = start_idx + offset
-                if target_idx >= len(hist):
-                    continue
-                target_dt = hist.iloc[target_idx]['date']
-                if target_dt > current_dt:
-                    continue
+            p_t = float(origin_row["close"])
+            p_true = float(target_row["close"])
+            true_ratio = (p_true - p_t) / p_t
+            sq_err = (pred_ratio - true_ratio) ** 2
 
-                pred_ratio = self._extract_predicted_ratio_for_horizon(past_forecast, horizon_key)
-                if pred_ratio is None:
-                    continue
-
-                p_t = float(hist.iloc[start_idx]['close'])
-                p_true = float(hist.iloc[target_idx]['close'])
-                true_ratio = (p_true - p_t) / p_t
-                hit = float(np.sign(pred_ratio) == np.sign(true_ratio))
-                sq_err = (pred_ratio - true_ratio) ** 2
-                samples.append((hit, sq_err))
-                if len(samples) >= max_samples:
-                    break
-
-            if samples:
-                hits = [s[0] for s in samples]
-                sq_errs = [s[1] for s in samples]
-                reliability[horizon_key] = {
-                    "direction_accuracy": float(np.mean(hits)),
-                    "mean_squared_return_error": float(np.mean(sq_errs)),
-                    "n": len(samples),
+            samples.append(
+                {
+                    "forecast_origin_date": origin_dt.strftime("%Y-%m-%d"),
+                    "resolved_target_date": pd.to_datetime(target_row["date"]).strftime("%Y-%m-%d"),
+                    "predicted_return_1d": float(pred_ratio),
+                    "realized_return_1d": float(true_ratio),
+                    "squared_error": float(sq_err),
                 }
-            else:
-                reliability[horizon_key] = {
-                    "direction_accuracy": 0.0,
-                    "mean_squared_return_error": 0.0,
-                    "n": 0,
-                }
+            )
+            squared_errors.append(float(sq_err))
+            realized_sq_returns.append(float(true_ratio ** 2))
 
-        return reliability
+        if not samples:
+            return {"past_7_resolved_1d": summary}
+
+        mse = float(np.mean(squared_errors))
+        reference_scale = float(np.mean(realized_sq_returns)) if realized_sq_returns else 0.0
+        normalized_mse = float(mse / max(reference_scale, 1e-12))
+        normalized_score = float(1.0 / (1.0 + normalized_mse))
+
+        summary.update(
+            {
+                "n": len(samples),
+                "mse": mse,
+                "normalized_mse": normalized_mse,
+                "normalized_reliability_score": normalized_score,
+                "samples": samples,
+            }
+        )
+        return {"past_7_resolved_1d": summary}
     
     def generate_tsfm_forecasts(self, forecast_date: str):
         """生成TSFM预测"""

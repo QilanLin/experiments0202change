@@ -126,8 +126,8 @@ class TSFMForecast:
     # 格式6: 比例，分位数，多时间窗口
     ratio_quantile_multi: Optional[Dict[str, Dict[str, float]]] = None
 
-    # 格式7: 历史可靠性（基于过去已解析的 forecast）
-    historical_reliability: Optional[Dict[str, Dict[str, float]]] = None
+    # 格式7: 历史可靠性（基于过去7个已兑现的1D forecast）
+    historical_reliability: Optional[Dict[str, Any]] = None
 
     # 元数据
     last_close: Optional[float] = None
@@ -524,6 +524,7 @@ class TSFMForecaster:
             prices: pd.Series,
             ticker: str,
             forecast_date: str,
+            save_input: bool = True,
     ) -> TSFMForecast:
         """生成所有7种格式的预测"""
         result = TSFMForecast(
@@ -539,10 +540,6 @@ class TSFMForecaster:
 
             context_df = self._prepare_context(prices, ticker, end_dt)
 
-            os.makedirs(self.input_dir, exist_ok=True)
-            input_filename = os.path.join(
-                self.input_dir, f"tsfm_input_{ticker}_{forecast_date}.json"
-            )
             context_dict = {
                 "ticker": ticker,
                 "forecast_date": forecast_date,
@@ -560,9 +557,14 @@ class TSFMForecaster:
                 "last_timestamp": context_df["timestamp"].max().isoformat() if len(context_df) > 0 else None,
                 "last_value": float(context_df["target"].iloc[-1]) if len(context_df) > 0 else None
             }
-            with open(input_filename, 'w', encoding='utf-8') as f:
-                json.dump(context_dict, f, indent=2, default=str)
-            print(f"[INFO] TSFM输入已保存到: {input_filename}")
+            if save_input:
+                os.makedirs(self.input_dir, exist_ok=True)
+                input_filename = os.path.join(
+                    self.input_dir, f"tsfm_input_{ticker}_{forecast_date}.json"
+                )
+                with open(input_filename, 'w', encoding='utf-8') as f:
+                    json.dump(context_dict, f, indent=2, default=str)
+                print(f"[INFO] TSFM输入已保存到: {input_filename}")
 
             if self.use_mock:
                 result = self._generate_mock_forecast(result, last_close)
@@ -773,7 +775,7 @@ class TSFMForecaster:
             return "\n".join(lines)
 
         elif format_type == 7:
-            # 格式7: 多时间窗口收益 + 历史可靠性
+            # 格式7: 多时间窗口收益 + 过去7个已兑现1D预测的可靠性摘要
             if forecast.ratio_1d is None:
                 return f"TSFM Forecast for {ticker} (multi-horizon returns + reliability):\n" \
                        f"Status: {forecast.status}\n" \
@@ -787,27 +789,27 @@ class TSFMForecaster:
                 f"3 Weeks: {forecast.ratio_3w * 100:.6f}%",
                 f"4 Weeks: {forecast.ratio_4w * 100:.6f}%",
                 "",
-                f"TSFM Historical Reliability for {ticker} (computed only from resolved past forecasts before {forecast.forecast_date}):",
+                f"TSFM Historical Reliability for {ticker} (computed from the last 7 resolved 1D forecasts before {forecast.forecast_date}):",
             ]
 
-            reliability = forecast.historical_reliability or {}
+            reliability = (forecast.historical_reliability or {}).get("past_7_resolved_1d", {})
             if not reliability:
                 lines.append("Insufficient historical reliability data.")
                 return "\n".join(lines)
 
-            horizon_labels = [("1d", "1 Day"), ("1w", "1 Week"), ("2w", "2 Weeks"), ("3w", "3 Weeks"), ("4w", "4 Weeks")]
-            for horizon_key, horizon_label in horizon_labels:
-                stats = reliability.get(horizon_key)
-                if not stats or int(stats.get("n", 0)) == 0:
-                    lines.append(f"{horizon_label}: insufficient history")
-                    continue
-                direction_acc = stats.get("direction_accuracy")
-                mse = stats.get("mean_squared_return_error")
-                n = int(stats.get("n", 0))
-                lines.append(
-                    f"{horizon_label}: direction accuracy={direction_acc * 100:.1f}%, "
-                    f"mean squared return error={mse * 10000:.4f} bp^2, n={n}"
-                )
+            n = int(reliability.get("n", 0))
+            if n == 0:
+                lines.append("Past 7 resolved 1D forecast MSE: insufficient history")
+                lines.append("Normalized Reliability Score: insufficient history")
+                lines.append("Sample Count: 0/7")
+                return "\n".join(lines)
+
+            mse = float(reliability.get("mse", 0.0))
+            score = float(reliability.get("normalized_reliability_score", 0.0))
+            window_size = int(reliability.get("window_size", 7))
+            lines.append(f"Past 7 resolved 1D forecast MSE: {mse * 10000:.4f} bp^2")
+            lines.append(f"Normalized Reliability Score: {score:.3f}")
+            lines.append(f"Sample Count: {n}/{window_size}")
             return "\n".join(lines)
 
         return f"Unknown format type: {format_type}"

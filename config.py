@@ -44,8 +44,11 @@ EXPERIMENT_CONFIG = {
         "format_6": "ratio_quantile_multi",  # 比例，分位数，多时间窗口
         "format_7": "ratio_multi_horizon_with_reliability",  # 比例，多时间窗口 + 历史可靠性
     },
-    "tsfm_reliability_max_samples_per_horizon": 20,
-    "tsfm_reliability_metrics": ["direction_accuracy", "mean_squared_return_error"],
+    "tsfm_reliability_window_size": 7,
+    "tsfm_reliability_metrics": [
+        "past_7_resolved_1d_mse",
+        "normalized_reliability_score",
+    ],
     
     # 数据源
     "data_vendor": "alpha_vantage",
