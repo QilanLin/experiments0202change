@@ -260,6 +260,7 @@ class ExperimentRunner:
     def _create_decision_func(self):
         """创建决策函数供模拟器使用"""
         def decision_func(date: str, state: PortfolioState) -> PortfolioDecision:
+            print(f"[STAGE] Starting LLM decision for {date}", flush=True)
             # 准备基本面数据（使用 as-of 基本面，避免未来信息泄露）
             fundamentals = {}
             for ticker in MAG7_TICKERS:
@@ -338,6 +339,7 @@ class ExperimentRunner:
             os.makedirs(os.path.dirname(llm_output_path), exist_ok=True)
             with open(llm_output_path, 'w') as f:
                 json.dump(decision.to_dict(), f, indent=2, default=str)
+            print(f"[STAGE] Saved LLM decision for {date} -> {llm_output_path}", flush=True)
             
             return decision
         
@@ -375,17 +377,23 @@ class ExperimentRunner:
         print(f"{'='*60}\n")
         
         # 加载数据
+        print("[STAGE] Loading market data", flush=True)
         self.load_data(end_date)
+        print("[STAGE] Finished loading market data", flush=True)
         
         # 生成TSFM预测（如果需要）
         if self.tsfm_format:
             # 为每个交易日生成预测
             trading_days = self._get_trading_days(start_date, end_date)
+            print(f"[STAGE] Generating TSFM forecasts for {len(trading_days)} trading days", flush=True)
             for date in trading_days:
                 self.generate_tsfm_forecasts(date)
+            print("[STAGE] Finished generating TSFM forecasts", flush=True)
         
         # 运行模拟
+        print("[STAGE] Creating decision function", flush=True)
         decision_func = self._create_decision_func()
+        print("[STAGE] Starting simulator.run", flush=True)
         result = self.simulator.run(
             experiment_type=self.experiment_type,
             price_data=self._price_data,
@@ -393,10 +401,12 @@ class ExperimentRunner:
             start_date=start_date,
             end_date=end_date,
         )
+        print("[STAGE] Finished simulator.run", flush=True)
         
         # 保存结果
         result_path = os.path.join(self.results_dir, "simulation_result.json")
         result.save(result_path)
+        print(f"[STAGE] Saved simulation result -> {result_path}", flush=True)
         
         # 打印摘要
         self._print_summary(result)
