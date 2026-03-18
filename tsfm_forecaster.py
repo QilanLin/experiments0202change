@@ -158,7 +158,8 @@ class TSFMForecaster:
         forecaster_type: str = 'chronos',
         model_name: str = "amazon/chronos-2", 
         device: str = None, 
-        use_mock: bool = False
+        use_mock: bool = False,
+        input_dir: str = "tsfm_inputs",
     ):
         """
         初始化时序预测器
@@ -173,6 +174,7 @@ class TSFMForecaster:
         self.model_name = model_name  # Chronos 模型名称
         self.device = device
         self.use_mock = use_mock
+        self.input_dir = input_dir
         self._pipeline = None
         
         # 验证 forecaster_type
@@ -537,9 +539,10 @@ class TSFMForecaster:
 
             context_df = self._prepare_context(prices, ticker, end_dt)
 
-            input_dir = "tsfm_inputs"
-            os.makedirs(input_dir, exist_ok=True)
-            input_filename = os.path.join(input_dir, f"tsfm_input_{ticker}_{forecast_date}.json")
+            os.makedirs(self.input_dir, exist_ok=True)
+            input_filename = os.path.join(
+                self.input_dir, f"tsfm_input_{ticker}_{forecast_date}.json"
+            )
             context_dict = {
                 "ticker": ticker,
                 "forecast_date": forecast_date,
@@ -799,11 +802,11 @@ class TSFMForecaster:
                     lines.append(f"{horizon_label}: insufficient history")
                     continue
                 direction_acc = stats.get("direction_accuracy")
-                mae = stats.get("mean_abs_return_error")
+                mse = stats.get("mean_squared_return_error")
                 n = int(stats.get("n", 0))
                 lines.append(
                     f"{horizon_label}: direction accuracy={direction_acc * 100:.1f}%, "
-                    f"mean absolute return error={mae * 100:.2f}%, n={n}"
+                    f"mean squared return error={mse * 10000:.4f} bp^2, n={n}"
                 )
             return "\n".join(lines)
 

@@ -146,6 +146,8 @@ class ExperimentRunner:
         self.run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
         self.results_dir = get_experiment_dir(experiment_type, self.run_id)
         os.makedirs(self.results_dir, exist_ok=True)
+        if self.tsfm_forecaster is not None:
+            self.tsfm_forecaster.input_dir = os.path.join(self.results_dir, "tsfm_inputs")
     
     def load_data(self, end_date: str = None):
         """加载所有数据"""
@@ -235,7 +237,7 @@ class ExperimentRunner:
     def _compute_historical_reliability(self, ticker: str, forecast_date: str) -> Dict[str, Dict[str, float]]:
         """
         基于当前 forecast_date 之前已经解析、且在当前日期前已“兑现”的历史 forecast，
-        计算各 horizon 的方向准确率和平均绝对收益误差。
+        计算各 horizon 的方向准确率和收益率 MSE。
         """
         hist = self._get_price_history_df(ticker)
         current_dt = pd.to_datetime(forecast_date)
@@ -273,23 +275,23 @@ class ExperimentRunner:
                 p_true = float(hist.iloc[target_idx]['close'])
                 true_ratio = (p_true - p_t) / p_t
                 hit = float(np.sign(pred_ratio) == np.sign(true_ratio))
-                abs_err = abs(pred_ratio - true_ratio)
-                samples.append((hit, abs_err))
+                sq_err = (pred_ratio - true_ratio) ** 2
+                samples.append((hit, sq_err))
                 if len(samples) >= max_samples:
                     break
 
             if samples:
                 hits = [s[0] for s in samples]
-                abs_errs = [s[1] for s in samples]
+                sq_errs = [s[1] for s in samples]
                 reliability[horizon_key] = {
                     "direction_accuracy": float(np.mean(hits)),
-                    "mean_abs_return_error": float(np.mean(abs_errs)),
+                    "mean_squared_return_error": float(np.mean(sq_errs)),
                     "n": len(samples),
                 }
             else:
                 reliability[horizon_key] = {
                     "direction_accuracy": 0.0,
-                    "mean_abs_return_error": 0.0,
+                    "mean_squared_return_error": 0.0,
                     "n": 0,
                 }
 
