@@ -42,7 +42,9 @@ EXPERIMENT_CONFIG = {
         "format_4": "numeric_quantile_30d",  # 数字，分位数，30天
         "format_5": "ratio_quantile_30d",    # 比例，分位数，30天
         "format_6": "ratio_quantile_multi",  # 比例，分位数，多时间窗口
+        "format_7": "ratio_multi_horizon_with_reliability",  # 比例，多时间窗口 + 历史可靠性
     },
+    "tsfm_reliability_max_samples_per_horizon": 20,
     
     # 数据源
     "data_vendor": "alpha_vantage",
@@ -61,6 +63,7 @@ class ExperimentType:
     LLM_TSFM_FORMAT_4 = "llm_tsfm_format_4"
     LLM_TSFM_FORMAT_5 = "llm_tsfm_format_5"
     LLM_TSFM_FORMAT_6 = "llm_tsfm_format_6"
+    LLM_TSFM_FORMAT_7 = "llm_tsfm_format_7"
 
 
 def get_experiment_dir(experiment_type: str, run_id: str = None) -> str:

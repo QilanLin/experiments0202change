@@ -1,13 +1,14 @@
 """
 TSFM Forecaster - Chronos-2 多格式预测模块
 
-支持6种输出格式：
+支持7种输出格式：
 1. 数字，接下来30天
 2. 比例，接下来30天
 3. 比例，1天/1周/2周/3周/4周
 4. 数字，分位数 {0.05, 0.25, 0.5, 0.75, 0.95}，30天
 5. 比例，分位数，30天
 6. 比例，分位数，多时间窗口
+7. 比例，多时间窗口 + 历史可靠性
 """
 
 from __future__ import annotations
@@ -124,6 +125,9 @@ class TSFMForecast:
 
     # 格式6: 比例，分位数，多时间窗口
     ratio_quantile_multi: Optional[Dict[str, Dict[str, float]]] = None
+
+    # 格式7: 历史可靠性（基于过去已解析的 forecast）
+    historical_reliability: Optional[Dict[str, Dict[str, float]]] = None
 
     # 元数据
     last_close: Optional[float] = None
@@ -519,7 +523,7 @@ class TSFMForecaster:
             ticker: str,
             forecast_date: str,
     ) -> TSFMForecast:
-        """生成所有6种格式的预测"""
+        """生成所有7种格式的预测"""
         result = TSFMForecast(
             ticker=ticker,
             forecast_date=forecast_date,
@@ -763,6 +767,44 @@ class TSFMForecaster:
                 q95 = forecast.ratio_quantile_multi["0.95"][horizon]
                 lines.append(
                     f"  {horizon}: [{q05 * 100:.1f}% {expl_05}, {q50 * 100:.1f}% {expl_50}, {q95 * 100:.1f}% {expl_95}]")
+            return "\n".join(lines)
+
+        elif format_type == 7:
+            # 格式7: 多时间窗口收益 + 历史可靠性
+            if forecast.ratio_1d is None:
+                return f"TSFM Forecast for {ticker} (multi-horizon returns + reliability):\n" \
+                       f"Status: {forecast.status}\n" \
+                       f"Error: {forecast.error or 'No prediction available'}"
+
+            lines = [
+                f"TSFM Forecast for {ticker} (multi-horizon returns):",
+                f"1 Day: {forecast.ratio_1d * 100:.6f}%",
+                f"1 Week: {forecast.ratio_1w * 100:.6f}%",
+                f"2 Weeks: {forecast.ratio_2w * 100:.6f}%",
+                f"3 Weeks: {forecast.ratio_3w * 100:.6f}%",
+                f"4 Weeks: {forecast.ratio_4w * 100:.6f}%",
+                "",
+                f"TSFM Historical Reliability for {ticker} (computed only from resolved past forecasts before {forecast.forecast_date}):",
+            ]
+
+            reliability = forecast.historical_reliability or {}
+            if not reliability:
+                lines.append("Insufficient historical reliability data.")
+                return "\n".join(lines)
+
+            horizon_labels = [("1d", "1 Day"), ("1w", "1 Week"), ("2w", "2 Weeks"), ("3w", "3 Weeks"), ("4w", "4 Weeks")]
+            for horizon_key, horizon_label in horizon_labels:
+                stats = reliability.get(horizon_key)
+                if not stats or int(stats.get("n", 0)) == 0:
+                    lines.append(f"{horizon_label}: insufficient history")
+                    continue
+                direction_acc = stats.get("direction_accuracy")
+                mae = stats.get("mean_abs_return_error")
+                n = int(stats.get("n", 0))
+                lines.append(
+                    f"{horizon_label}: direction accuracy={direction_acc * 100:.1f}%, "
+                    f"mean absolute return error={mae * 100:.2f}%, n={n}"
+                )
             return "\n".join(lines)
 
         return f"Unknown format type: {format_type}"

@@ -16,7 +16,7 @@ import json
 import os
 import random
 from datetime import datetime, timedelta
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 import pandas as pd
 import numpy as np
 
@@ -140,6 +140,7 @@ class ExperimentRunner:
         self._price_data: Dict[str, pd.DataFrame] = {}
         self._fundamentals: Dict[str, Dict] = {}
         self._tsfm_forecasts: Dict[str, Dict[str, TSFMForecast]] = {}
+        self._price_history_cache: Dict[str, pd.DataFrame] = {}
         
         # 结果目录
         self.run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -202,6 +203,97 @@ class ExperimentRunner:
         df_sub = df_sub.sort_values(date_col).reset_index(drop=True)
         
         return df_sub
+
+    def _get_price_history_df(self, ticker: str) -> pd.DataFrame:
+        """返回统一字段、按日期升序的价格历史缓存。"""
+        if ticker in self._price_history_cache:
+            return self._price_history_cache[ticker]
+
+        df = self._price_data[ticker].copy()
+        date_col = 'date' if 'date' in df.columns else 'timestamp'
+        close_col = 'close' if 'close' in df.columns else 'Close'
+        hist = df[[date_col, close_col]].copy()
+        hist = hist.rename(columns={date_col: 'date', close_col: 'close'})
+        hist['date'] = pd.to_datetime(hist['date'])
+        hist['close'] = hist['close'].astype(float)
+        hist = hist.sort_values('date').reset_index(drop=True)
+        self._price_history_cache[ticker] = hist
+        return hist
+
+    def _extract_predicted_ratio_for_horizon(self, forecast: TSFMForecast, horizon_key: str) -> Optional[float]:
+        horizon_to_attr = {
+            "1d": "ratio_1d",
+            "1w": "ratio_1w",
+            "2w": "ratio_2w",
+            "3w": "ratio_3w",
+            "4w": "ratio_4w",
+        }
+        attr = horizon_to_attr[horizon_key]
+        value = getattr(forecast, attr, None)
+        return float(value) if value is not None else None
+
+    def _compute_historical_reliability(self, ticker: str, forecast_date: str) -> Dict[str, Dict[str, float]]:
+        """
+        基于当前 forecast_date 之前已经解析、且在当前日期前已“兑现”的历史 forecast，
+        计算各 horizon 的方向准确率和平均绝对收益误差。
+        """
+        hist = self._get_price_history_df(ticker)
+        current_dt = pd.to_datetime(forecast_date)
+        reliability: Dict[str, Dict[str, float]] = {}
+        max_samples = int(EXPERIMENT_CONFIG.get("tsfm_reliability_max_samples_per_horizon", 20))
+
+        past_forecasts: List[tuple[pd.Timestamp, TSFMForecast]] = []
+        for date_str in sorted(self._tsfm_forecasts.keys()):
+            date_dt = pd.to_datetime(date_str)
+            if date_dt >= current_dt:
+                continue
+            forecast = self._tsfm_forecasts.get(date_str, {}).get(ticker)
+            if forecast is not None and forecast.status != "error":
+                past_forecasts.append((date_dt, forecast))
+
+        for horizon_key, offset in self.tsfm_forecaster.HORIZONS.items():
+            samples = []
+            for past_dt, past_forecast in reversed(past_forecasts):
+                row_match = hist.index[hist['date'] == past_dt]
+                if len(row_match) == 0:
+                    continue
+                start_idx = int(row_match[0])
+                target_idx = start_idx + offset
+                if target_idx >= len(hist):
+                    continue
+                target_dt = hist.iloc[target_idx]['date']
+                if target_dt > current_dt:
+                    continue
+
+                pred_ratio = self._extract_predicted_ratio_for_horizon(past_forecast, horizon_key)
+                if pred_ratio is None:
+                    continue
+
+                p_t = float(hist.iloc[start_idx]['close'])
+                p_true = float(hist.iloc[target_idx]['close'])
+                true_ratio = (p_true - p_t) / p_t
+                hit = float(np.sign(pred_ratio) == np.sign(true_ratio))
+                abs_err = abs(pred_ratio - true_ratio)
+                samples.append((hit, abs_err))
+                if len(samples) >= max_samples:
+                    break
+
+            if samples:
+                hits = [s[0] for s in samples]
+                abs_errs = [s[1] for s in samples]
+                reliability[horizon_key] = {
+                    "direction_accuracy": float(np.mean(hits)),
+                    "mean_abs_return_error": float(np.mean(abs_errs)),
+                    "n": len(samples),
+                }
+            else:
+                reliability[horizon_key] = {
+                    "direction_accuracy": 0.0,
+                    "mean_abs_return_error": 0.0,
+                    "n": 0,
+                }
+
+        return reliability
     
     def generate_tsfm_forecasts(self, forecast_date: str):
         """生成TSFM预测"""
@@ -245,6 +337,11 @@ class ExperimentRunner:
             forecast = self.tsfm_forecaster.forecast_all_formats(
                 prices, ticker, forecast_date
             )
+            if self.tsfm_format == 7:
+                forecast.historical_reliability = self._compute_historical_reliability(
+                    ticker=ticker,
+                    forecast_date=forecast_date,
+                )
             forecasts[ticker] = forecast
             
             # 保存TSFM输出
@@ -260,6 +357,7 @@ class ExperimentRunner:
     def _create_decision_func(self):
         """创建决策函数供模拟器使用"""
         def decision_func(date: str, state: PortfolioState) -> PortfolioDecision:
+            print(f"[STAGE] Starting LLM decision for {date}", flush=True)
             # 准备基本面数据（使用 as-of 基本面，避免未来信息泄露）
             fundamentals = {}
             for ticker in MAG7_TICKERS:
@@ -338,6 +436,7 @@ class ExperimentRunner:
             os.makedirs(os.path.dirname(llm_output_path), exist_ok=True)
             with open(llm_output_path, 'w') as f:
                 json.dump(decision.to_dict(), f, indent=2, default=str)
+            print(f"[STAGE] Saved LLM decision for {date} -> {llm_output_path}", flush=True)
             
             return decision
         
@@ -375,17 +474,23 @@ class ExperimentRunner:
         print(f"{'='*60}\n")
         
         # 加载数据
+        print("[STAGE] Loading market data", flush=True)
         self.load_data(end_date)
+        print("[STAGE] Finished loading market data", flush=True)
         
         # 生成TSFM预测（如果需要）
         if self.tsfm_format:
             # 为每个交易日生成预测
             trading_days = self._get_trading_days(start_date, end_date)
+            print(f"[STAGE] Generating TSFM forecasts for {len(trading_days)} trading days", flush=True)
             for date in trading_days:
                 self.generate_tsfm_forecasts(date)
+            print("[STAGE] Finished generating TSFM forecasts", flush=True)
         
         # 运行模拟
+        print("[STAGE] Creating decision function", flush=True)
         decision_func = self._create_decision_func()
+        print("[STAGE] Starting simulator.run", flush=True)
         result = self.simulator.run(
             experiment_type=self.experiment_type,
             price_data=self._price_data,
@@ -393,10 +498,12 @@ class ExperimentRunner:
             start_date=start_date,
             end_date=end_date,
         )
+        print("[STAGE] Finished simulator.run", flush=True)
         
         # 保存结果
         result_path = os.path.join(self.results_dir, "simulation_result.json")
         result.save(result_path)
+        print(f"[STAGE] Saved simulation result -> {result_path}", flush=True)
         
         # 打印摘要
         self._print_summary(result)
@@ -447,7 +554,7 @@ def main():
         "--type", 
         type=str, 
         default="baseline",
-        choices=["baseline", "tsfm_1", "tsfm_2", "tsfm_3", "tsfm_4", "tsfm_5", "tsfm_6"],
+        choices=["baseline", "tsfm_1", "tsfm_2", "tsfm_3", "tsfm_4", "tsfm_5", "tsfm_6", "tsfm_7"],
         help="Experiment type"
     )
     parser.add_argument("--debug", action="store_true", help="Use debug LLM (smaller model)")
@@ -474,6 +581,7 @@ def main():
         "tsfm_4": (ExperimentType.LLM_TSFM_FORMAT_4, 4),
         "tsfm_5": (ExperimentType.LLM_TSFM_FORMAT_5, 5),
         "tsfm_6": (ExperimentType.LLM_TSFM_FORMAT_6, 6),
+        "tsfm_7": (ExperimentType.LLM_TSFM_FORMAT_7, 7),
     }
     
     experiment_type, tsfm_format = type_mapping[args.type]

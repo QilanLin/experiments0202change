@@ -62,12 +62,12 @@ class AlphaVantageLoader:
         filename = f"{ticker}{suffix}.json" if data_type != "price" else f"{ticker}{suffix}.csv"
         return os.path.join(self.cache_dir, data_type, filename)
     
-    def _load_from_cache(self, cache_path: str) -> Optional[Any]:
+    def _load_from_cache(self, cache_path: str, allow_stale: bool = False) -> Optional[Any]:
         """从缓存加载"""
         if os.path.exists(cache_path):
             # 检查缓存是否过期（1天）
             mtime = os.path.getmtime(cache_path)
-            if time.time() - mtime < 86400:
+            if allow_stale or time.time() - mtime < 86400:
                 if cache_path.endswith(".csv"):
                     return pd.read_csv(cache_path)
                 with open(cache_path, 'r') as f:
@@ -116,7 +116,14 @@ class AlphaVantageLoader:
             "datatype": "csv",
         }
         
-        csv_data = self._make_request(params)
+        try:
+            csv_data = self._make_request(params)
+        except Exception:
+            stale_cached = self._load_from_cache(cache_path, allow_stale=True) if use_cache else None
+            if stale_cached is not None:
+                print(f"  Falling back to stale price cache for {ticker}")
+                return stale_cached
+            raise
         
         # 检查是否返回了错误信息（JSON格式）
         if csv_data.strip().startswith('{'):
@@ -186,7 +193,14 @@ class AlphaVantageLoader:
             "symbol": ticker,
         }
         
-        data = self._make_request(params)
+        try:
+            data = self._make_request(params)
+        except Exception:
+            stale_cached = self._load_from_cache(cache_path, allow_stale=True) if use_cache else None
+            if stale_cached is not None:
+                print(f"  Falling back to stale fundamentals cache for {ticker} overview")
+                return stale_cached
+            raise
         self._save_to_cache(cache_path, data)
         time.sleep(self.RATE_LIMIT_DELAY)
         
@@ -206,7 +220,14 @@ class AlphaVantageLoader:
             "symbol": ticker,
         }
         
-        data = self._make_request(params)
+        try:
+            data = self._make_request(params)
+        except Exception:
+            stale_cached = self._load_from_cache(cache_path, allow_stale=True) if use_cache else None
+            if stale_cached is not None:
+                print(f"  Falling back to stale fundamentals cache for {ticker} income")
+                return stale_cached
+            raise
         self._save_to_cache(cache_path, data)
         time.sleep(self.RATE_LIMIT_DELAY)
         
@@ -226,7 +247,14 @@ class AlphaVantageLoader:
             "symbol": ticker,
         }
         
-        data = self._make_request(params)
+        try:
+            data = self._make_request(params)
+        except Exception:
+            stale_cached = self._load_from_cache(cache_path, allow_stale=True) if use_cache else None
+            if stale_cached is not None:
+                print(f"  Falling back to stale fundamentals cache for {ticker} balance")
+                return stale_cached
+            raise
         self._save_to_cache(cache_path, data)
         time.sleep(self.RATE_LIMIT_DELAY)
         
