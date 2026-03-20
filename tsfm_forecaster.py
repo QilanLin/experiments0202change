@@ -806,15 +806,22 @@ class TSFMForecaster:
 
             n = int(reliability.get("n", 0))
             if n == 0:
-                lines.append("Past 7 resolved 1D forecast MSE: insufficient history")
+                lines.append("Past 7 resolved 1D forecast MSE values: insufficient history")
                 if format_type == 8:
                     lines.append("Normalized Reliability Score: insufficient history")
                 lines.append("Sample Count: 0/7")
                 return "\n".join(lines)
 
-            mse = float(reliability.get("mse", 0.0))
             window_size = int(reliability.get("window_size", 7))
-            lines.append(f"Past 7 resolved 1D forecast MSE: {mse * 10000:.4f} bp^2")
+            samples = reliability.get("samples", []) or []
+            lines.append("Past 7 resolved 1D forecast MSE values (oldest to newest):")
+            for sample in samples:
+                origin_dt = sample.get("forecast_origin_date", "unknown")
+                target_dt = sample.get("resolved_target_date", "unknown")
+                sq_err = float(sample.get("squared_error", 0.0))
+                lines.append(
+                    f"  {origin_dt} -> {target_dt}: {sq_err * 10000:.4f} bp^2"
+                )
             if format_type == 8:
                 score = float(reliability.get("normalized_reliability_score", 0.0))
                 lines.append(f"Normalized Reliability Score: {score:.3f}")
