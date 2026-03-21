@@ -39,49 +39,17 @@ from .config import (
     EXPERIMENT_CONFIG, 
     MAG7_TICKERS,
     CASH_TICKER,
-    ASSET_TICKERS,
     get_experiment_dir,
 )
 from .format_registry import CLI_EXPERIMENT_CHOICES, FORMAT_SPEC_BY_CLI
 from .artifact_store import ArtifactStore
 from .data_loader import AlphaVantageLoader
 from .historical_reliability import HistoricalReliabilityCalculator
+from .llm_clients import build_llm_client
 from .tsfm_forecaster import TSFMForecaster, TSFMForecast, get_forecaster
 from .portfolio_agent import PortfolioWeightAgent
 from .portfolio_models import PortfolioDecision, PortfolioState
 from .simulator import PortfolioSimulator, SimulationResult
-from .lmstudio_openai_chat import LMStudioOpenAIChat
-from tradingagents_tsfm_modified_v5.tradingagents.llms.local_qwen import LocalQwenChat
-
-
-class MockLLM:
-    """Mock LLM for debugging without GPU"""
-    
-    def __init__(self, model_name: str = "mock"):
-        self.model_name = model_name
-    
-    def invoke(self, messages):
-        """返回mock的权重决策"""
-        # 使用已设置的随机种子（在文件开头已设置）
-        # 生成随机权重（包含 CASH）
-        weights = {t: random.random() for t in ASSET_TICKERS}
-        total = sum(weights.values())
-        weights = {k: v/total for k, v in weights.items()}
-        
-        response = f'''```json
-{{
-  "action": "rebalance",
-  "weights": {{{", ".join(f'"{k}": {v:.4f}' for k, v in weights.items())}}},
-  "confidence": 0.7,
-  "reasoning": "Mock decision for debugging"
-}}
-```'''
-        
-        class MockResponse:
-            def __init__(self, content):
-                self.content = content
-        
-        return MockResponse(response)
 
 
 class ExperimentRunner:
@@ -102,31 +70,9 @@ class ExperimentRunner:
         self.tsfm_format = tsfm_format
         self.use_mock_llm = use_mock_llm
         self.model_name = model_name
-        
-        # 选择LLM
-        llm_model = (
-            EXPERIMENT_CONFIG["debug_llm"] if debug 
-            else EXPERIMENT_CONFIG["production_llm"]
-        )
-        
-        llm_provider = EXPERIMENT_CONFIG.get("llm_provider", "qwen")
 
-        # 初始化LLM
-        if use_mock_llm:
-            print("Using MockLLM for debugging...")
-            self.llm = MockLLM(model_name="mock")
-        elif llm_provider == "qwen":
-            self.llm = LocalQwenChat(
-                model_name=llm_model,
-                temperature=0.0,
-            )
-        else:
-            self.llm = LMStudioOpenAIChat(
-                model_name=llm_model,
-                base_url=EXPERIMENT_CONFIG["lmstudio_base_url"],
-                api_key=EXPERIMENT_CONFIG.get("lmstudio_api_key"),
-                temperature=0.0,
-            )
+        # 初始化 LLM：统一通过客户端工厂构建，runner 不再关心 provider 分支。
+        self.llm = build_llm_client(debug=debug, use_mock_llm=use_mock_llm)
         
         # 初始化组件
         self.data_loader = AlphaVantageLoader()
