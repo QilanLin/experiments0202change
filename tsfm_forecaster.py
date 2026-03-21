@@ -23,6 +23,8 @@ from dataclasses import dataclass, asdict
 import pandas as pd
 import numpy as np
 
+from .format_registry import HORIZON_SPECS, TSFM_QUANTILES
+
 # Chronos-2 导入
 try:
     from chronos import Chronos2Pipeline
@@ -145,14 +147,8 @@ class TSFMForecast:
 class TSFMForecaster:
     """时序预测器（支持 Chronos、TimeFM 和 Moirai2）"""
 
-    QUANTILES = [0.05, 0.25, 0.5, 0.75, 0.95]
-    HORIZONS = {
-        "1d": 1,
-        "1w": 5,
-        "2w": 10,
-        "3w": 15,
-        "4w": 20,
-    }
+    QUANTILES = list(TSFM_QUANTILES)
+    HORIZONS = {spec.key: spec.days for spec in HORIZON_SPECS}
 
     def __init__(
         self, 
@@ -594,12 +590,7 @@ class TSFMForecaster:
 
             result.numeric_30d = median_30d.tolist()
             result.ratio_30d = ((median_30d - last_close) / last_close).tolist()
-
-            result.ratio_1d = (median_30d[0] - last_close) / last_close
-            result.ratio_1w = (median_30d[4] - last_close) / last_close
-            result.ratio_2w = (median_30d[9] - last_close) / last_close
-            result.ratio_3w = (median_30d[14] - last_close) / last_close
-            result.ratio_4w = (median_30d[19] - last_close) / last_close
+            self._assign_ratio_horizons(result, result.ratio_30d)
 
             result.numeric_quantile_30d = {}
             for q in self.QUANTILES:
@@ -614,13 +605,10 @@ class TSFMForecaster:
             result.ratio_quantile_multi = {}
             for q in self.QUANTILES:
                 q_values = self._extract_quantile(pred_30d, q)
-                result.ratio_quantile_multi[str(q)] = {
-                    "1d": (q_values[0] - last_close) / last_close,
-                    "1w": (q_values[4] - last_close) / last_close,
-                    "2w": (q_values[9] - last_close) / last_close,
-                    "3w": (q_values[14] - last_close) / last_close,
-                    "4w": (q_values[19] - last_close) / last_close,
-                }
+                result.ratio_quantile_multi[str(q)] = self._build_ratio_quantile_multi(
+                    q_values,
+                    last_close,
+                )
 
             result.status = "success"
 
@@ -655,12 +643,7 @@ class TSFMForecaster:
             result.numeric_30d.append(price)
 
         result.ratio_30d = [(p - last_close) / last_close for p in result.numeric_30d]
-
-        result.ratio_1d = result.ratio_30d[0]
-        result.ratio_1w = result.ratio_30d[4]
-        result.ratio_2w = result.ratio_30d[9]
-        result.ratio_3w = result.ratio_30d[14]
-        result.ratio_4w = result.ratio_30d[19]
+        self._assign_ratio_horizons(result, result.ratio_30d)
 
         result.numeric_quantile_30d = {}
         for q in self.QUANTILES:
@@ -678,14 +661,11 @@ class TSFMForecaster:
 
         result.ratio_quantile_multi = {}
         for q in self.QUANTILES:
-            ratios = result.ratio_quantile_30d[str(q)]
-            result.ratio_quantile_multi[str(q)] = {
-                "1d": ratios[0],
-                "1w": ratios[4],
-                "2w": ratios[9],
-                "3w": ratios[14],
-                "4w": ratios[19],
-            }
+            quantile_prices = np.array(result.numeric_quantile_30d[str(q)], dtype=float)
+            result.ratio_quantile_multi[str(q)] = self._build_ratio_quantile_multi(
+                quantile_prices,
+                last_close,
+            )
 
         return result
 
@@ -709,123 +689,164 @@ class TSFMForecaster:
             for q in self.QUANTILES
         }
 
-    def format_for_llm(self, forecast: TSFMForecast, format_type: int) -> str:
-        """将预测结果格式化为LLM可读的字符串"""
-        ticker = forecast.ticker
-
-        # 定义解释文案
+    def _get_quantile_explanations(self) -> tuple[str, str, str]:
         expl_05 = "(0.05 indicates a 5%  probability of being less than this value)"
         expl_50 = "(0.5  indicates a 50% probability of being less than this value)"
         expl_95 = "(0.95 indicates a 95% probability of being less than this value)"
+        return expl_05, expl_50, expl_95
 
-        if format_type == 1:
-            # 格式1: 数字，30天
-            prices = forecast.numeric_30d[:5] + ["..."] + forecast.numeric_30d[-5:]
-            return f"TSFM Forecast for {ticker} (30-day price prediction):\n" \
-                   f"Day 1-5: {[f'{p:.6f}' for p in forecast.numeric_30d[:5]]}\n" \
-                   f"Day 26-30: {[f'{p:.6f}' for p in forecast.numeric_30d[-5:]]}"
+    def _iter_horizon_specs(self) -> tuple:
+        return HORIZON_SPECS
 
-        elif format_type == 2:
-            # 格式2: 比例，30天
-            return f"TSFM Forecast for {ticker} (30-day return prediction):\n" \
-                   f"Day 1-5: {[f'{r * 100:.6f}%' for r in forecast.ratio_30d[:5]]}\n" \
-                   f"Day 26-30: {[f'{r * 100:.6f}%' for r in forecast.ratio_30d[-5:]]}"
+    def _quantile_keys(self) -> list[str]:
+        return [str(q) for q in self.QUANTILES]
 
-        elif format_type == 3:
-            # 格式3: 比例，多时间窗口
-            if forecast.ratio_1d is None:
-                return f"TSFM Forecast for {ticker} (multi-horizon returns):\n" \
-                       f"Status: {forecast.status}\n" \
-                       f"Error: {forecast.error or 'No prediction available'}"
+    def _assign_ratio_horizons(self, forecast: TSFMForecast, ratios: List[float]) -> None:
+        for spec in self._iter_horizon_specs():
+            setattr(forecast, spec.ratio_attr, ratios[spec.days - 1])
+
+    def _build_ratio_quantile_multi(self, q_values: np.ndarray, last_close: float) -> Dict[str, float]:
+        return {
+            spec.key: (q_values[spec.days - 1] - last_close) / last_close
+            for spec in self._iter_horizon_specs()
+        }
+
+    def _render_format_1(self, forecast: TSFMForecast) -> str:
+        # 格式1：数字，接下来30天
+        ticker = forecast.ticker
+        return f"TSFM Forecast for {ticker} (30-day price prediction):\n" \
+               f"Day 1-5: {[f'{p:.6f}' for p in forecast.numeric_30d[:5]]}\n" \
+               f"Day 26-30: {[f'{p:.6f}' for p in forecast.numeric_30d[-5:]]}"
+
+    def _render_format_2(self, forecast: TSFMForecast) -> str:
+        # 格式2：比例，接下来30天
+        ticker = forecast.ticker
+        return f"TSFM Forecast for {ticker} (30-day return prediction):\n" \
+               f"Day 1-5: {[f'{r * 100:.6f}%' for r in forecast.ratio_30d[:5]]}\n" \
+               f"Day 26-30: {[f'{r * 100:.6f}%' for r in forecast.ratio_30d[-5:]]}"
+
+    def _render_format_3(self, forecast: TSFMForecast) -> str:
+        # 格式3：比例，多时间窗口
+        ticker = forecast.ticker
+        if forecast.ratio_1d is None:
             return f"TSFM Forecast for {ticker} (multi-horizon returns):\n" \
-                   f"1 Day: {forecast.ratio_1d * 100:.6f}%\n" \
-                   f"1 Week: {forecast.ratio_1w * 100:.6f}%\n" \
-                   f"2 Weeks: {forecast.ratio_2w * 100:.6f}%\n" \
-                   f"3 Weeks: {forecast.ratio_3w * 100:.6f}%\n" \
-                   f"4 Weeks: {forecast.ratio_4w * 100:.6f}%"
+                   f"Status: {forecast.status}\n" \
+                   f"Error: {forecast.error or 'No prediction available'}"
+        lines = [f"TSFM Forecast for {ticker} (multi-horizon returns):"]
+        for spec in self._iter_horizon_specs():
+            ratio = getattr(forecast, spec.ratio_attr)
+            lines.append(f"{spec.label}: {ratio * 100:.6f}%")
+        return "\n".join(lines)
 
-        elif format_type == 4:
-            # 格式4: 数字，分位数，30天
-            q50 = forecast.numeric_quantile_30d["0.5"]
-            q05 = forecast.numeric_quantile_30d["0.05"]
-            q95 = forecast.numeric_quantile_30d["0.95"]
-            return f"TSFM Forecast for {ticker} (30-day quantile prices):\n" \
-                   f"Median (50%): Day30=${q50[-1]:.6f} {expl_50}\n" \
-                   f"5th percentile: Day30=${q05[-1]:.6f} {expl_05}\n" \
-                   f"95th percentile: Day30=${q95[-1]:.6f} {expl_95}"
+    def _render_format_4(self, forecast: TSFMForecast) -> str:
+        # 格式4：数字，分位数，30天
+        ticker = forecast.ticker
+        expl_05, expl_50, expl_95 = self._get_quantile_explanations()
+        q50 = forecast.numeric_quantile_30d["0.5"]
+        q05 = forecast.numeric_quantile_30d["0.05"]
+        q95 = forecast.numeric_quantile_30d["0.95"]
+        return f"TSFM Forecast for {ticker} (30-day quantile prices):\n" \
+               f"Median (50%): Day30=${q50[-1]:.6f} {expl_50}\n" \
+               f"5th percentile: Day30=${q05[-1]:.6f} {expl_05}\n" \
+               f"95th percentile: Day30=${q95[-1]:.6f} {expl_95}"
 
-        elif format_type == 5:
-            # 格式5: 比例，分位数，30天
-            lines = [f"TSFM Forecast for {ticker} (30-day quantile returns):"]
-            for q in ["0.05", "0.25", "0.5", "0.75", "0.95"]:
-                r = forecast.ratio_quantile_30d[q][-1]
-                note = ""
-                if q == "0.05": note = f" {expl_05}"
-                if q == "0.5": note = f" {expl_50}"
-                if q == "0.95": note = f" {expl_95}"
-                lines.append(f"  {q} quantile: {r * 100:.6f}%{note}")
+    def _render_format_5(self, forecast: TSFMForecast) -> str:
+        # 格式5：比例，分位数，30天
+        ticker = forecast.ticker
+        expl_05, expl_50, expl_95 = self._get_quantile_explanations()
+        lines = [f"TSFM Forecast for {ticker} (30-day quantile returns):"]
+        for q in self._quantile_keys():
+            r = forecast.ratio_quantile_30d[q][-1]
+            note = ""
+            if q == "0.05":
+                note = f" {expl_05}"
+            if q == "0.5":
+                note = f" {expl_50}"
+            if q == "0.95":
+                note = f" {expl_95}"
+            lines.append(f"  {q} quantile: {r * 100:.6f}%{note}")
+        return "\n".join(lines)
+
+    def _render_format_6(self, forecast: TSFMForecast) -> str:
+        # 格式6：比例，分位数，多时间窗口
+        ticker = forecast.ticker
+        expl_05, expl_50, expl_95 = self._get_quantile_explanations()
+        if forecast.ratio_quantile_multi is None:
+            return f"TSFM Forecast for {ticker} (quantile returns by horizon):\n" \
+                   f"Status: {forecast.status}\n" \
+                   f"Error: {forecast.error or 'No prediction available'}"
+        lines = [f"TSFM Forecast for {ticker} (quantile returns by horizon):"]
+        for spec in self._iter_horizon_specs():
+            horizon = spec.key
+            q05 = forecast.ratio_quantile_multi["0.05"][horizon]
+            q50 = forecast.ratio_quantile_multi["0.5"][horizon]
+            q95 = forecast.ratio_quantile_multi["0.95"][horizon]
+            lines.append(
+                f"  {horizon}: [{q05 * 100:.1f}% {expl_05}, {q50 * 100:.1f}% {expl_50}, {q95 * 100:.1f}% {expl_95}]"
+            )
+        return "\n".join(lines)
+
+    def _render_format_7(self, forecast: TSFMForecast, include_score: bool) -> str:
+        # 格式7a/7b：比例，多时间窗口 + 历史可靠性摘要
+        ticker = forecast.ticker
+        if forecast.ratio_1d is None:
+            return f"TSFM Forecast for {ticker} (multi-horizon returns + reliability):\n" \
+                   f"Status: {forecast.status}\n" \
+                   f"Error: {forecast.error or 'No prediction available'}"
+
+        lines = [f"TSFM Forecast for {ticker} (multi-horizon returns):"]
+        for spec in self._iter_horizon_specs():
+            ratio = getattr(forecast, spec.ratio_attr)
+            lines.append(f"{spec.label}: {ratio * 100:.6f}%")
+        lines.extend([
+            "",
+            f"TSFM Historical Reliability for {ticker} (computed from the last 7 resolved 1D forecasts before {forecast.forecast_date}):",
+        ])
+
+        reliability = (forecast.historical_reliability or {}).get("past_7_resolved_1d", {})
+        if not reliability:
+            lines.append("Insufficient historical reliability data.")
             return "\n".join(lines)
 
-        elif format_type == 6:
-            # 格式6: 比例，分位数，多时间窗口
-            if forecast.ratio_quantile_multi is None:
-                return f"TSFM Forecast for {ticker} (quantile returns by horizon):\n" \
-                       f"Status: {forecast.status}\n" \
-                       f"Error: {forecast.error or 'No prediction available'}"
-            lines = [f"TSFM Forecast for {ticker} (quantile returns by horizon):"]
-            for horizon in ["1d", "1w", "2w", "3w", "4w"]:
-                q05 = forecast.ratio_quantile_multi["0.05"][horizon]
-                q50 = forecast.ratio_quantile_multi["0.5"][horizon]
-                q95 = forecast.ratio_quantile_multi["0.95"][horizon]
-                lines.append(
-                    f"  {horizon}: [{q05 * 100:.1f}% {expl_05}, {q50 * 100:.1f}% {expl_50}, {q95 * 100:.1f}% {expl_95}]")
+        n = int(reliability.get("n", 0))
+        if n == 0:
+            lines.append("Past 7 resolved 1D forecast MSE values: insufficient history")
+            if include_score:
+                lines.append("Normalized Reliability Score: insufficient history")
+            lines.append("Sample Count: 0/7")
             return "\n".join(lines)
 
-        elif format_type in (7, 8):
-            # 格式7a/7b: 多时间窗口收益 + 过去7个已兑现1D预测的可靠性摘要
-            if forecast.ratio_1d is None:
-                return f"TSFM Forecast for {ticker} (multi-horizon returns + reliability):\n" \
-                       f"Status: {forecast.status}\n" \
-                       f"Error: {forecast.error or 'No prediction available'}"
+        window_size = int(reliability.get("window_size", 7))
+        samples = reliability.get("samples", []) or []
+        lines.append("Past 7 resolved 1D forecast MSE values (oldest to newest):")
+        for sample in samples:
+            origin_dt = sample.get("forecast_origin_date", "unknown")
+            target_dt = sample.get("resolved_target_date", "unknown")
+            sq_err = float(sample.get("squared_error", 0.0))
+            lines.append(
+                f"  {origin_dt} -> {target_dt}: {sq_err * 10000:.4f} bp^2"
+            )
+        if include_score:
+            score = float(reliability.get("normalized_reliability_score", 0.0))
+            lines.append(f"Normalized Reliability Score: {score:.3f}")
+        lines.append(f"Sample Count: {n}/{window_size}")
+        return "\n".join(lines)
 
-            lines = [
-                f"TSFM Forecast for {ticker} (multi-horizon returns):",
-                f"1 Day: {forecast.ratio_1d * 100:.6f}%",
-                f"1 Week: {forecast.ratio_1w * 100:.6f}%",
-                f"2 Weeks: {forecast.ratio_2w * 100:.6f}%",
-                f"3 Weeks: {forecast.ratio_3w * 100:.6f}%",
-                f"4 Weeks: {forecast.ratio_4w * 100:.6f}%",
-                "",
-                f"TSFM Historical Reliability for {ticker} (computed from the last 7 resolved 1D forecasts before {forecast.forecast_date}):",
-            ]
+    def _get_format_renderers(self) -> dict[int, callable]:
+        return {
+            1: self._render_format_1,
+            2: self._render_format_2,
+            3: self._render_format_3,
+            4: self._render_format_4,
+            5: self._render_format_5,
+            6: self._render_format_6,
+            7: lambda forecast: self._render_format_7(forecast, include_score=False),
+            8: lambda forecast: self._render_format_7(forecast, include_score=True),
+        }
 
-            reliability = (forecast.historical_reliability or {}).get("past_7_resolved_1d", {})
-            if not reliability:
-                lines.append("Insufficient historical reliability data.")
-                return "\n".join(lines)
-
-            n = int(reliability.get("n", 0))
-            if n == 0:
-                lines.append("Past 7 resolved 1D forecast MSE values: insufficient history")
-                if format_type == 8:
-                    lines.append("Normalized Reliability Score: insufficient history")
-                lines.append("Sample Count: 0/7")
-                return "\n".join(lines)
-
-            window_size = int(reliability.get("window_size", 7))
-            samples = reliability.get("samples", []) or []
-            lines.append("Past 7 resolved 1D forecast MSE values (oldest to newest):")
-            for sample in samples:
-                origin_dt = sample.get("forecast_origin_date", "unknown")
-                target_dt = sample.get("resolved_target_date", "unknown")
-                sq_err = float(sample.get("squared_error", 0.0))
-                lines.append(
-                    f"  {origin_dt} -> {target_dt}: {sq_err * 10000:.4f} bp^2"
-                )
-            if format_type == 8:
-                score = float(reliability.get("normalized_reliability_score", 0.0))
-                lines.append(f"Normalized Reliability Score: {score:.3f}")
-            lines.append(f"Sample Count: {n}/{window_size}")
-            return "\n".join(lines)
-
-        return f"Unknown format type: {format_type}"
+    def format_for_llm(self, forecast: TSFMForecast, format_type: int) -> str:
+        """将预测结果格式化为LLM可读的字符串"""
+        renderer = self._get_format_renderers().get(format_type)
+        if renderer is None:
+            return f"Unknown format type: {format_type}"
+        return renderer(forecast)

@@ -74,22 +74,13 @@ def run_experiments(
     end_date: str = None,
 ):
     """运行完整实验"""
-    from experiments.config import ExperimentType, EXPERIMENT_CONFIG
+    from experiments.config import EXPERIMENT_CONFIG
+    from experiments.format_registry import build_experiment_entries
     from experiments.run_experiment import ExperimentRunner
     from experiments.compare_results import find_all_results, generate_report
     
-    # 实验配置
-    experiments = [
-        # Baseline
-        {"type": ExperimentType.BASELINE_LLM_ONLY, "tsfm_format": None, "name": "Baseline (LLM Only)"},
-        # TSFM格式1-6
-        {"type": ExperimentType.LLM_TSFM_FORMAT_1, "tsfm_format": 1, "name": "TSFM Format 1 (Numeric 30d)"},
-        {"type": ExperimentType.LLM_TSFM_FORMAT_2, "tsfm_format": 2, "name": "TSFM Format 2 (Ratio 30d)"},
-        {"type": ExperimentType.LLM_TSFM_FORMAT_3, "tsfm_format": 3, "name": "TSFM Format 3 (Ratio Multi-Horizon)"},
-        {"type": ExperimentType.LLM_TSFM_FORMAT_4, "tsfm_format": 4, "name": "TSFM Format 4 (Numeric Quantile 30d)"},
-        {"type": ExperimentType.LLM_TSFM_FORMAT_5, "tsfm_format": 5, "name": "TSFM Format 5 (Ratio Quantile 30d)"},
-        {"type": ExperimentType.LLM_TSFM_FORMAT_6, "tsfm_format": 6, "name": "TSFM Format 6 (Ratio Quantile Multi-Horizon)"},
-    ]
+    # 实验列表改由统一 registry 生成，避免脚本内手写一份 baseline / format 定义
+    experiments = build_experiment_entries(format_ids=[1, 2, 3, 4, 5, 6])
     
     # 选择模型
     debug_mode = not use_production_model

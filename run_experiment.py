@@ -37,12 +37,12 @@ except ImportError:
 
 from .config import (
     EXPERIMENT_CONFIG, 
-    ExperimentType, 
     MAG7_TICKERS,
     CASH_TICKER,
     ASSET_TICKERS,
     get_experiment_dir,
 )
+from .format_registry import CLI_EXPERIMENT_CHOICES, FORMAT_SPEC_BY_CLI
 from .data_loader import AlphaVantageLoader
 from .tsfm_forecaster import TSFMForecaster, TSFMForecast, get_forecaster
 from .portfolio_agent import PortfolioWeightAgent, PortfolioDecision, PortfolioState
@@ -609,7 +609,7 @@ def main():
         "--type", 
         type=str, 
         default="baseline",
-        choices=["baseline", "tsfm_1", "tsfm_2", "tsfm_3", "tsfm_4", "tsfm_5", "tsfm_6", "tsfm_7a", "tsfm_7b"],
+        choices=list(CLI_EXPERIMENT_CHOICES),
         help="Experiment type"
     )
     parser.add_argument("--debug", action="store_true", help="Use debug LLM (smaller model)")
@@ -627,20 +627,9 @@ def main():
     
     args = parser.parse_args()
     
-    # 映射实验类型
-    type_mapping = {
-        "baseline": (ExperimentType.BASELINE_LLM_ONLY, None),
-        "tsfm_1": (ExperimentType.LLM_TSFM_FORMAT_1, 1),
-        "tsfm_2": (ExperimentType.LLM_TSFM_FORMAT_2, 2),
-        "tsfm_3": (ExperimentType.LLM_TSFM_FORMAT_3, 3),
-        "tsfm_4": (ExperimentType.LLM_TSFM_FORMAT_4, 4),
-        "tsfm_5": (ExperimentType.LLM_TSFM_FORMAT_5, 5),
-        "tsfm_6": (ExperimentType.LLM_TSFM_FORMAT_6, 6),
-        "tsfm_7a": (ExperimentType.LLM_TSFM_FORMAT_7A, 7),
-        "tsfm_7b": (ExperimentType.LLM_TSFM_FORMAT_7B, 8),
-    }
-    
-    experiment_type, tsfm_format = type_mapping[args.type]
+    spec = FORMAT_SPEC_BY_CLI[args.type]
+    experiment_type = spec.experiment_type
+    tsfm_format = spec.format_id
     
     runner = ExperimentRunner(
         experiment_type=experiment_type,

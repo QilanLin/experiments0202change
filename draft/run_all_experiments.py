@@ -12,7 +12,7 @@ import os
 from datetime import datetime
 from typing import List, Dict, Any
 
-from .config import ExperimentType, get_experiment_dir
+from .format_registry import TSFM_FORMAT_IDS, build_experiment_entries
 from .run_experiment import ExperimentRunner
 from .compare_results import find_all_results, generate_report
 
@@ -28,44 +28,16 @@ def run_all_experiments(
     """运行所有实验"""
     
     if tsfm_formats is None:
-        tsfm_formats = [1, 2, 3, 4, 5, 6]
+        # 保持原行为：默认只跑 format_1 到 format_6
+        tsfm_formats = [fmt for fmt in TSFM_FORMAT_IDS if fmt <= 6]
     
     results = []
     
-    # 实验配置
-    experiments = []
-    
-    if not skip_baseline:
-        experiments.append({
-            "type": ExperimentType.BASELINE_LLM_ONLY,
-            "tsfm_format": None,
-            "name": "Baseline (LLM Only)",
-        })
-    
-    format_names = {
-        1: "TSFM Format 1 (Numeric 30d)",
-        2: "TSFM Format 2 (Ratio 30d)",
-        3: "TSFM Format 3 (Ratio Multi-Horizon)",
-        4: "TSFM Format 4 (Numeric Quantile 30d)",
-        5: "TSFM Format 5 (Ratio Quantile 30d)",
-        6: "TSFM Format 6 (Ratio Quantile Multi-Horizon)",
-    }
-    
-    type_mapping = {
-        1: ExperimentType.LLM_TSFM_FORMAT_1,
-        2: ExperimentType.LLM_TSFM_FORMAT_2,
-        3: ExperimentType.LLM_TSFM_FORMAT_3,
-        4: ExperimentType.LLM_TSFM_FORMAT_4,
-        5: ExperimentType.LLM_TSFM_FORMAT_5,
-        6: ExperimentType.LLM_TSFM_FORMAT_6,
-    }
-    
-    for fmt in tsfm_formats:
-        experiments.append({
-            "type": type_mapping[fmt],
-            "tsfm_format": fmt,
-            "name": format_names[fmt],
-        })
+    # 实验列表改由统一 registry 生成，避免这里再维护一份 format 映射
+    experiments = build_experiment_entries(
+        include_baseline=not skip_baseline,
+        format_ids=tsfm_formats,
+    )
     
     print(f"\n{'='*60}")
     print("BATCH EXPERIMENT RUNNER")
@@ -160,7 +132,7 @@ def main():
         type=int, 
         nargs="+", 
         default=None,
-        help="TSFM formats to test (1-6)"
+        help="TSFM format IDs to test (defaults to all registered TSFM formats)"
     )
     
     args = parser.parse_args()
