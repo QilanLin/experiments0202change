@@ -38,17 +38,17 @@ except ImportError:
 from .config import (
     EXPERIMENT_CONFIG, 
     MAG7_TICKERS,
-    CASH_TICKER,
     get_experiment_dir,
 )
 from .format_registry import CLI_EXPERIMENT_CHOICES, FORMAT_SPEC_BY_CLI
 from .artifact_store import ArtifactStore
 from .data_loader import AlphaVantageLoader
+from .daily_decision_pipeline import DailyDecisionPipeline
 from .historical_reliability import HistoricalReliabilityCalculator
 from .llm_clients import build_llm_client
-from .tsfm_forecaster import TSFMForecaster, TSFMForecast, get_forecaster
+from .market_context import MarketContextProvider
+from .tsfm_forecaster import TSFMForecast, get_forecaster
 from .portfolio_agent import PortfolioWeightAgent
-from .portfolio_models import PortfolioDecision, PortfolioState
 from .simulator import PortfolioSimulator, SimulationResult
 
 
@@ -109,6 +109,20 @@ class ExperimentRunner:
                 get_price_history_df=self._get_price_history_df,
                 window_size=int(EXPERIMENT_CONFIG.get("tsfm_reliability_window_size", 7)),
             )
+        self.market_context_provider = MarketContextProvider(
+            data_loader=self.data_loader,
+            get_price_data=lambda: self._price_data,
+            get_tsfm_forecasts=lambda: self._tsfm_forecasts,
+            slice_price_df_upto=self._slice_price_df_upto,
+            format_tsfm_for_llm=(
+                None
+                if self.tsfm_forecaster is None or self.tsfm_format is None
+                else lambda forecast: self.tsfm_forecaster.format_for_llm(
+                    forecast, self.tsfm_format
+                )
+            ),
+            debug=self.debug,
+        )
     
     def load_data(self, end_date: str = None):
         """加载所有数据"""
@@ -242,89 +256,13 @@ class ExperimentRunner:
     
     def _create_decision_func(self):
         """创建决策函数供模拟器使用"""
-        def decision_func(date: str, state: PortfolioState) -> PortfolioDecision:
-            print(f"[STAGE] Starting LLM decision for {date}", flush=True)
-            # 准备基本面数据（使用 as-of 基本面，避免未来信息泄露）
-            fundamentals = {}
-            for ticker in MAG7_TICKERS:
-                try:
-                    snapshot = self.data_loader.get_simple_fundamentals_asof(
-                        ticker, date, lag_days=45
-                    )
-                    fundamentals[ticker] = self.data_loader.format_simple_fundamentals_for_llm(snapshot)
-                except Exception as e:
-                    if self.debug:
-                        print(f"  Warning: Failed to get as-of fundamentals for {ticker} on {date}: {e}")
-                    fundamentals[ticker] = "No fundamental data available"
-            
-            # 准备价格历史（只针对 MAG7，CASH 不需要价格数据）
-            # 修复：切片到 date，避免未来价格泄露
-            price_history = {}
-            for ticker in MAG7_TICKERS:
-                if ticker in self._price_data:
-                    df = self._price_data[ticker]
-                    
-                    # 切片到当前日期
-                    df_upto = self._slice_price_df_upto(df, date)
-                    
-                    # 统一使用复权后的 close 列
-                    close_col = 'close' if 'close' in df_upto.columns else 'Close'
-                    price_history[ticker] = df_upto[close_col].tail(30).tolist()
-                    
-                    # Debug 断言：确保没有未来价格泄露
-                    if self.debug:
-                        date_col = 'date' if 'date' in df_upto.columns else 'timestamp'
-                        max_date = pd.to_datetime(df_upto[date_col]).max()
-                        current_date_dt = pd.to_datetime(date)
-                        if max_date > current_date_dt:
-                            raise ValueError(
-                                f"Data leak detected: {ticker} on {date}: "
-                                f"max_date={max_date} > current_date={current_date_dt}"
-                            )
-            
-            # 准备TSFM预测（如果有，只针对 MAG7）
-            tsfm_forecasts = None
-            if self.tsfm_format and date in self._tsfm_forecasts:
-                tsfm_forecasts = {}
-                for ticker, forecast in self._tsfm_forecasts[date].items():
-                    if ticker in MAG7_TICKERS:  # 只包含 MAG7
-                        tsfm_forecasts[ticker] = self.tsfm_forecaster.format_for_llm(
-                            forecast, self.tsfm_format
-                        )
-            
-            # 确保 current_weights 包含 CASH
-            current_weights = state.weights.copy()
-            if CASH_TICKER not in current_weights:
-                current_weights[CASH_TICKER] = 0.0
-            
-            # 调用Agent
-            decision = self.portfolio_agent.decide(
-                current_date=date,
-                fundamentals=fundamentals,
-                price_history=price_history,
-                tsfm_forecasts=tsfm_forecasts,
-                current_weights=current_weights,
-            )
-            
-            # 最小自检日志（debug 模式）
-            if self.debug:
-                weights_sum = sum(decision.weights.values())
-                print(f"[DEBUG] Date: {date}")
-                print(f"  Parsed weights: {decision.weights}")
-                print(f"  Weights sum: {weights_sum:.6f}")
-                if abs(weights_sum - 1.0) > 0.01:
-                    print(f"  WARNING: Weights sum is not 1.0!")
-            
-            # 保存 LLM 输出（含 prompt / raw_llm_output）。
-            llm_output_path = self.artifact_store.save_llm_decision(
-                decision,
-                decision_date=date,
-            )
-            print(f"[STAGE] Saved LLM decision for {date} -> {llm_output_path}", flush=True)
-            
-            return decision
-        
-        return decision_func
+        pipeline = DailyDecisionPipeline(
+            market_context_provider=self.market_context_provider,
+            portfolio_agent=self.portfolio_agent,
+            artifact_store=self.artifact_store,
+            debug=self.debug,
+        )
+        return pipeline
     
     def run(self, end_date: str = None, start_date: str = None) -> SimulationResult:
         """运行实验"""
