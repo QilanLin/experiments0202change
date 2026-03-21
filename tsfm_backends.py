@@ -91,6 +91,7 @@ class ChronosBackend(BaseTSFMBackend):
             except ImportError:
                 device_map = "cpu"
 
+            # 保持原有行为：Chronos backend 复用一个全局 pipeline，避免重复加载大模型。
             _CHRONOS_PIPELINE = Chronos2Pipeline.from_pretrained(
                 self.model_name or "amazon/chronos-2", device_map=device_map
             )
@@ -133,6 +134,7 @@ class TimesFMBackend(BaseTSFMBackend):
         prediction_length: int,
         quantile_levels: List[float],
     ) -> pd.DataFrame:
+        # TimeFM wrapper 内部已处理 quantile 映射逻辑，这里只保留统一接口转发。
         pipeline = self.load_pipeline()
         return pipeline.predict_df(
             context_df,
@@ -221,6 +223,7 @@ def build_tsfm_backend(
     device: str | None = None,
     model_name: str | None = None,
 ) -> BaseTSFMBackend:
+    """统一 backend 工厂：外部仍传字符串，内部返回多态 adapter。"""
     backend_cls = BACKEND_CLASSES.get(backend_name)
     if backend_cls is None:
         raise ValueError(

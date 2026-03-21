@@ -120,6 +120,7 @@ class TSFMForecaster:
         device: str = None, 
         use_mock: bool = False,
         input_dir: str = "tsfm_inputs",
+        artifact_store = None,
     ):
         """
         初始化时序预测器
@@ -135,6 +136,7 @@ class TSFMForecaster:
         self.device = device
         self.use_mock = use_mock
         self.input_dir = input_dir
+        self.artifact_store = artifact_store
         
         self.backend: BaseTSFMBackend = build_tsfm_backend(
             forecaster_type,
@@ -270,15 +272,23 @@ class TSFMForecaster:
                 "last_value": float(context_df["target"].iloc[-1]) if len(context_df) > 0 else None
             }
             if save_input:
-                target_input_dir = self.input_dir
-                if input_subdir:
-                    target_input_dir = os.path.join(self.input_dir, input_subdir)
-                os.makedirs(target_input_dir, exist_ok=True)
-                input_filename = os.path.join(
-                    target_input_dir, f"tsfm_input_{ticker}_{forecast_date}.json"
-                )
-                with open(input_filename, 'w', encoding='utf-8') as f:
-                    json.dump(context_dict, f, indent=2, default=str)
+                if self.artifact_store is not None:
+                    input_filename = self.artifact_store.save_tsfm_input(
+                        context_dict,
+                        ticker=ticker,
+                        forecast_date=forecast_date,
+                        input_subdir=input_subdir,
+                    )
+                else:
+                    target_input_dir = self.input_dir
+                    if input_subdir:
+                        target_input_dir = os.path.join(self.input_dir, input_subdir)
+                    os.makedirs(target_input_dir, exist_ok=True)
+                    input_filename = os.path.join(
+                        target_input_dir, f"tsfm_input_{ticker}_{forecast_date}.json"
+                    )
+                    with open(input_filename, 'w', encoding='utf-8') as f:
+                        json.dump(context_dict, f, indent=2, default=str)
                 if log_input_save:
                     print(f"[INFO] TSFM输入已保存到: {input_filename}")
 

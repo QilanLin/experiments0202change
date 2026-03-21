@@ -43,6 +43,7 @@ from .config import (
     get_experiment_dir,
 )
 from .format_registry import CLI_EXPERIMENT_CHOICES, FORMAT_SPEC_BY_CLI
+from .artifact_store import ArtifactStore
 from .data_loader import AlphaVantageLoader
 from .historical_reliability import HistoricalReliabilityCalculator
 from .tsfm_forecaster import TSFMForecaster, TSFMForecast, get_forecaster
@@ -149,10 +150,13 @@ class ExperimentRunner:
         # 结果目录
         self.run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
         self.results_dir = get_experiment_dir(experiment_type, self.run_id)
-        os.makedirs(self.results_dir, exist_ok=True)
+        # 统一的运行期产物保存入口：tsfm_inputs / tsfm_outputs / llm_outputs / simulation_result
+        self.artifact_store = ArtifactStore(self.results_dir)
         if self.tsfm_forecaster is not None:
-            self.tsfm_forecaster.input_dir = os.path.join(self.results_dir, "tsfm_inputs")
+            self.tsfm_forecaster.input_dir = self.artifact_store.tsfm_input_dir()
+            self.tsfm_forecaster.artifact_store = self.artifact_store
         if self.tsfm_forecaster is not None and self.tsfm_format in (7, 8):
+            # format_7a / 7b 专用：历史可靠性逻辑从 runner 抽到独立 calculator。
             self._historical_reliability = HistoricalReliabilityCalculator(
                 tsfm_forecaster=self.tsfm_forecaster,
                 get_price_history_df=self._get_price_history_df,
@@ -280,14 +284,12 @@ class ExperimentRunner:
                     forecast_date=forecast_date,
                 )
             forecasts[ticker] = forecast
-            
-            # 保存TSFM输出
-            forecast_path = os.path.join(
-                self.results_dir, "tsfm_outputs", f"{ticker}_{forecast_date}.json"
+            # 保存 TSFM 输出（保持原有目录结构和文件名）。
+            self.artifact_store.save_tsfm_output(
+                forecast,
+                ticker=ticker,
+                forecast_date=forecast_date,
             )
-            os.makedirs(os.path.dirname(forecast_path), exist_ok=True)
-            with open(forecast_path, 'w') as f:
-                json.dump(forecast.to_dict(), f, indent=2, default=str)
         
         self._tsfm_forecasts[forecast_date] = forecasts
     
@@ -366,13 +368,11 @@ class ExperimentRunner:
                 if abs(weights_sum - 1.0) > 0.01:
                     print(f"  WARNING: Weights sum is not 1.0!")
             
-            # 保存LLM输出
-            llm_output_path = os.path.join(
-                self.results_dir, "llm_outputs", f"decision_{date}.json"
+            # 保存 LLM 输出（含 prompt / raw_llm_output）。
+            llm_output_path = self.artifact_store.save_llm_decision(
+                decision,
+                decision_date=date,
             )
-            os.makedirs(os.path.dirname(llm_output_path), exist_ok=True)
-            with open(llm_output_path, 'w') as f:
-                json.dump(decision.to_dict(), f, indent=2, default=str)
             print(f"[STAGE] Saved LLM decision for {date} -> {llm_output_path}", flush=True)
             
             return decision
@@ -437,9 +437,8 @@ class ExperimentRunner:
         )
         print("[STAGE] Finished simulator.run", flush=True)
         
-        # 保存结果
-        result_path = os.path.join(self.results_dir, "simulation_result.json")
-        result.save(result_path)
+        # 保存最终回测结果。
+        result_path = self.artifact_store.save_simulation_result(result)
         print(f"[STAGE] Saved simulation result -> {result_path}", flush=True)
         
         # 打印摘要

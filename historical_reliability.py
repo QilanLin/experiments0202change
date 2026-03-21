@@ -20,6 +20,7 @@ class HistoricalReliabilityCalculator:
         self.tsfm_forecaster = tsfm_forecaster
         self.get_price_history_df = get_price_history_df
         self.window_size = int(window_size)
+        # 按 ticker -> origin_date 缓存历史 1D forecast，避免多个决策日重复回放同一天。
         self._historical_1d_forecast_cache: Dict[str, Dict[str, Optional[Dict[str, Any]]]] = {}
 
     def _get_cached_historical_1d_prediction(
@@ -42,6 +43,7 @@ class HistoricalReliabilityCalculator:
             cache[origin_date] = None
             return None
 
+        # 用历史起点当天及之前可见的数据重新生成 1D forecast，避免未来信息泄露。
         prices = df_upto["close"].astype(float)
         prices.index = pd.to_datetime(df_upto["date"])
         historical_input_subdir = os.path.join("historical_reliability", ticker)
@@ -95,6 +97,7 @@ class HistoricalReliabilityCalculator:
         if current_idx == 0:
             return {"past_7_resolved_1d": summary}
 
+        # 只回看当前决策日之前最近 window_size 个已经兑现的一日预测起点。
         start_idx = max(0, current_idx - self.window_size)
         origin_indices = list(range(start_idx, current_idx))
 
