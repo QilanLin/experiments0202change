@@ -42,8 +42,8 @@ EXPERIMENT_CONFIG = {
         "format_4": "numeric_quantile_30d",  # 数字，分位数，30天
         "format_5": "ratio_quantile_30d",    # 比例，分位数，30天
         "format_6": "ratio_quantile_multi",  # 比例，分位数，多时间窗口
-        "format_7a": "ratio_multi_horizon_with_mse",                # 比例，多时间窗口 + 过去7个已兑现1D预测MSE
-        "format_7b": "ratio_multi_horizon_with_mse_and_score",      # 比例，多时间窗口 + MSE + 归一化分数
+        "format_7a": "ratio_multi_horizon_with_mse",                # 比例，多时间窗口 + 过去7个已兑现1D预测的逐条MSE值
+        "format_7b": "ratio_multi_horizon_with_mse_and_score",      # 比例，多时间窗口 + 逐条MSE值 + 归一化分数
     },
     "tsfm_reliability_window_size": 7,
     "tsfm_reliability_metrics": [
