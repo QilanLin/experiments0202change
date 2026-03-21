@@ -17,51 +17,14 @@ import io
 import json
 import os
 from datetime import datetime, timedelta
-from typing import Dict, Any, List, Optional, Tuple
+from typing import Dict, Any, List, Optional, Tuple, Callable
 from dataclasses import dataclass, asdict
 
 import pandas as pd
 import numpy as np
 
 from .format_registry import HORIZON_SPECS, TSFM_QUANTILES
-
-# Chronos-2 导入
-try:
-    from chronos import Chronos2Pipeline
-
-    _CHRONOS_AVAILABLE = True
-except ImportError:
-    Chronos2Pipeline = None
-    _CHRONOS_AVAILABLE = False
-
-# TimeFM 导入
-try:
-    from .timesfm_forecaster import TimesFMForecaster, TimesFMConfig
-    _TIMESFM_AVAILABLE = True
-except ImportError:
-    TimesFMForecaster = None
-    TimesFMConfig = None
-    _TIMESFM_AVAILABLE = False
-
-# Moirai2 导入
-try:
-    from .moirai2_forecaster import Moirai2Forecaster, Moirai2Config
-    _MOIRAI2_AVAILABLE = True
-except ImportError:
-    Moirai2Forecaster = None
-    Moirai2Config = None
-    _MOIRAI2_AVAILABLE = False
-
-# Toto 导入
-try:
-    from .toto_forecaster import TotoForecasterWrapper, TotoConfig
-    _TOTO_AVAILABLE = True
-except ImportError:
-    TotoForecasterWrapper = None
-    TotoConfig = None
-    _TOTO_AVAILABLE = False
-
-_CHRONOS_PIPELINE = None
+from .tsfm_backends import BaseTSFMBackend, build_tsfm_backend
 
 
 def get_forecaster(model_name: str = 'chronos', **kwargs):
@@ -172,105 +135,16 @@ class TSFMForecaster:
         self.device = device
         self.use_mock = use_mock
         self.input_dir = input_dir
-        self._pipeline = None
         
-        # 验证 forecaster_type
-        if forecaster_type not in ('chronos', 'timesfm', 'moirai2', 'toto'):
-            raise ValueError(
-                f"Invalid forecaster_type: {forecaster_type}. "
-                f"Supported values: 'chronos', 'timesfm', 'moirai2', 'toto'"
-            )
-        
-        # TimeFM 可用性检查
-        if forecaster_type == 'timesfm' and not _TIMESFM_AVAILABLE:
-            raise ImportError(
-                f"TimeFM forecaster is not available. "
-                f"Please install timesfm package: pip install timesfm"
-            )
-        
-        # Moirai2 可用性检查
-        if forecaster_type == 'moirai2' and not _MOIRAI2_AVAILABLE:
-            raise ImportError(
-                f"Moirai2 forecaster is not available. "
-                f"Please install uni2ts package: pip install uni2ts"
-            )
-        
-        # Toto 可用性检查
-        if forecaster_type == 'toto' and not _TOTO_AVAILABLE:
-            raise ImportError(
-                f"Toto forecaster is not available. "
-                f"Please install toto package: pip install toto"
-            )
+        self.backend: BaseTSFMBackend = build_tsfm_backend(
+            forecaster_type,
+            device=self.device,
+            model_name=self.model_name,
+        )
 
     def _load_pipeline(self):
-        """延迟加载预测 pipeline（根据 forecaster_type 选择）"""
-        if self.forecaster_type == 'chronos':
-            return self._load_chronos_pipeline()
-        elif self.forecaster_type == 'timesfm':
-            return self._load_timesfm_pipeline()
-        elif self.forecaster_type == 'moirai2':
-            return self._load_moirai2_pipeline()
-        elif self.forecaster_type == 'toto':
-            return self._load_toto_pipeline()
-        else:
-            raise ValueError(f"Unknown forecaster_type: {self.forecaster_type}")
-    
-    def _load_timesfm_pipeline(self):
-        """延迟加载TimeFM pipeline"""
-        if not _TIMESFM_AVAILABLE:
-            raise ImportError("timesfm package not installed")
-        
-        if self._pipeline is None:
-            # 创建 TimeFM forecaster 实例
-            cfg = TimesFMConfig(device=self.device)
-            self._pipeline = TimesFMForecaster(cfg=cfg, device=self.device)
-        
-        return self._pipeline
-    
-    def _load_moirai2_pipeline(self):
-        """延迟加载Moirai2 pipeline"""
-        if not _MOIRAI2_AVAILABLE:
-            raise ImportError("uni2ts package not installed")
-        
-        if self._pipeline is None:
-            # 创建 Moirai2 forecaster 实例
-            cfg = Moirai2Config(device=self.device)
-            self._pipeline = Moirai2Forecaster(cfg=cfg, device=self.device)
-        
-        return self._pipeline
-    
-    def _load_toto_pipeline(self):
-        """延迟加载Toto pipeline"""
-        if not _TOTO_AVAILABLE:
-            raise ImportError("toto package not installed")
-        
-        if self._pipeline is None:
-            # 创建 Toto forecaster 实例
-            cfg = TotoConfig(device=self.device)
-            self._pipeline = TotoForecasterWrapper(cfg=cfg, device=self.device)
-        
-        return self._pipeline
-    
-    def _load_chronos_pipeline(self):
-        """延迟加载Chronos pipeline"""
-        global _CHRONOS_PIPELINE
-
-        if not _CHRONOS_AVAILABLE:
-            raise ImportError("chronos-forecasting not installed")
-
-        if _CHRONOS_PIPELINE is None:
-            try:
-                import torch
-                device_map = self.device or ("cuda" if torch.cuda.is_available() else "cpu")
-            except ImportError:
-                device_map = "cpu"
-
-            _CHRONOS_PIPELINE = Chronos2Pipeline.from_pretrained(
-                self.model_name, device_map=device_map
-            )
-
-        self._pipeline = _CHRONOS_PIPELINE
-        return self._pipeline
+        """延迟加载预测 pipeline（委托给 backend adapter）。"""
+        return self.backend.load_pipeline()
 
     def _prepare_context(
             self,
@@ -335,171 +209,10 @@ class TSFMForecaster:
         返回:
             预测结果 DataFrame
         """
-        if self.forecaster_type == 'chronos':
-            return self._run_chronos_forecast(
-                context_df, prediction_length, quantile_levels
-            )
-        elif self.forecaster_type == 'timesfm':
-            return self._run_timesfm_forecast(
-                context_df, prediction_length, quantile_levels
-            )
-        elif self.forecaster_type == 'moirai2':
-            return self._run_moirai2_forecast(
-                context_df, prediction_length, quantile_levels
-            )
-        elif self.forecaster_type == 'toto':
-            return self._run_toto_forecast(
-                context_df, prediction_length, quantile_levels
-            )
-        else:
-            raise ValueError(f"Unknown forecaster_type: {self.forecaster_type}")
-    
-    def _run_timesfm_forecast(
-            self,
-            context_df: pd.DataFrame,
-            prediction_length: int,
-            quantile_levels: List[float]
-    ) -> pd.DataFrame:
-        """
-        运行TimeFM预测
-        
-        TimeFM 只支持 0.1-0.9 的十分位数，需要将 Chronos 的分位数映射到 TimeFM 支持的值。
-        映射规则：0.05->0.1, 0.25->0.2, 0.5->0.5, 0.75->0.8, 0.95->0.9
-        """
-        pipeline = self._load_pipeline()
-        
-        # TimeFM 支持的分位数：0.1, 0.2, ..., 0.9
-        timesfm_supported = {round(i / 10, 1) for i in range(1, 10)}
-        
-        # 映射规则：将 Chronos 的分位数映射到最接近的 TimeFM 支持值
-        quantile_mapping = {
-            0.05: 0.1,
-            0.25: 0.2,
-            0.5: 0.5,
-            0.75: 0.8,
-            0.95: 0.9,
-        }
-        
-        # 将 quantile_levels 映射到 TimeFM 支持的值
-        mapped_quantiles = []
-        quantile_to_mapped = {}
-        for q in quantile_levels:
-            q_float = float(q)
-            # 如果已经在支持列表中，直接使用
-            if round(q_float, 1) in timesfm_supported:
-                mapped_q = round(q_float, 1)
-            # 否则使用映射表
-            elif q_float in quantile_mapping:
-                mapped_q = quantile_mapping[q_float]
-            else:
-                # 对于其他值，四舍五入到最接近的十分位数
-                mapped_q = round(round(q_float, 1) * 10) / 10
-                if mapped_q < 0.1:
-                    mapped_q = 0.1
-                elif mapped_q > 0.9:
-                    mapped_q = 0.9
-            
-            if mapped_q not in mapped_quantiles:
-                mapped_quantiles.append(mapped_q)
-            quantile_to_mapped[q_float] = mapped_q
-        
-        # 调用 TimeFM 预测
-        pred_df = pipeline.predict_df(
-            context_df,
-            future_df=None,  # TimeFM 暂不支持 future_df
-            prediction_length=prediction_length,
-            quantile_levels=mapped_quantiles,
-            id_column="id",
-            timestamp_column="timestamp",
-            target="target",
-        )
-        
-        # 将列名从映射后的分位数改回原始请求的分位数
-        # 例如：如果请求 0.05，但 TimeFM 返回了 0.1，则将 "0.1" 列重命名为 "0.05"
-        # 注意：多个原始分位数可能映射到同一个 TimeFM 分位数（例如 0.05 和 0.1 都映射到 0.1）
-        # 这种情况下，我们需要为每个原始分位数创建副本
-        
-        # 首先，找出哪些映射后的列会被多个原始分位数使用
-        mapped_to_orig = {}
-        for orig_q, mapped_q in quantile_to_mapped.items():
-            mapped_col = f"{mapped_q:.1f}"
-            if mapped_col not in mapped_to_orig:
-                mapped_to_orig[mapped_col] = []
-            mapped_to_orig[mapped_col].append(orig_q)
-        
-        # 对于每个原始分位数，决定是重命名还是复制
-        for orig_q, mapped_q in quantile_to_mapped.items():
-            mapped_col = f"{mapped_q:.1f}"
-            orig_col = str(orig_q)
-            
-            # 如果列名相同，不需要处理
-            if mapped_col == orig_col:
-                continue
-            
-            if mapped_col in pred_df.columns:
-                # 如果这个映射后的列只被一个原始分位数使用，直接重命名
-                if len(mapped_to_orig[mapped_col]) == 1:
-                    pred_df = pred_df.rename(columns={mapped_col: orig_col})
-                else:
-                    # 如果被多个原始分位数使用，需要复制列
-                    pred_df[orig_col] = pred_df[mapped_col].copy()
-        
-        return pred_df
-    
-    def _run_moirai2_forecast(
-            self,
-            context_df: pd.DataFrame,
-            prediction_length: int,
-            quantile_levels: List[float]
-    ) -> pd.DataFrame:
-        """运行Moirai2预测"""
-        pipeline = self._load_pipeline()
-
-        return pipeline.predict_df(
-            context_df,
-            future_df=None,  # Moirai2 暂不支持 future_df
-            prediction_length=prediction_length,
-            quantile_levels=quantile_levels,
-            id_column="id",
-            timestamp_column="timestamp",
-            target="target",
-        )
-    
-    def _run_toto_forecast(
-            self,
-            context_df: pd.DataFrame,
-            prediction_length: int,
-            quantile_levels: List[float]
-    ) -> pd.DataFrame:
-        """运行Toto预测"""
-        pipeline = self._load_pipeline()
-
-        return pipeline.predict_df(
-            context_df,
-            future_df=None,  # Toto 暂不支持 future_df
-            prediction_length=prediction_length,
-            quantile_levels=quantile_levels,
-            id_column="id",
-            timestamp_column="timestamp",
-            target="target",
-        )
-    
-    def _run_chronos_forecast(
-            self,
-            context_df: pd.DataFrame,
-            prediction_length: int,
-            quantile_levels: List[float]
-    ) -> pd.DataFrame:
-        """运行Chronos预测"""
-        pipeline = self._load_pipeline()
-
-        return pipeline.predict_df(
+        return self.backend.predict_df(
             context_df,
             prediction_length=prediction_length,
             quantile_levels=quantile_levels,
-            id_column="id",
-            timestamp_column="timestamp",
-            target="target",
         )
 
     def _extract_quantile(self, df: pd.DataFrame, q: float) -> np.ndarray:
@@ -832,7 +545,7 @@ class TSFMForecaster:
         lines.append(f"Sample Count: {n}/{window_size}")
         return "\n".join(lines)
 
-    def _get_format_renderers(self) -> dict[int, callable]:
+    def _get_format_renderers(self) -> dict[int, Callable[[TSFMForecast], str]]:
         return {
             1: self._render_format_1,
             2: self._render_format_2,
