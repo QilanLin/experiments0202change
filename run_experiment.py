@@ -47,7 +47,8 @@ from .artifact_store import ArtifactStore
 from .data_loader import AlphaVantageLoader
 from .historical_reliability import HistoricalReliabilityCalculator
 from .tsfm_forecaster import TSFMForecaster, TSFMForecast, get_forecaster
-from .portfolio_agent import PortfolioWeightAgent, PortfolioDecision, PortfolioState
+from .portfolio_agent import PortfolioWeightAgent
+from .portfolio_models import PortfolioDecision, PortfolioState
 from .simulator import PortfolioSimulator, SimulationResult
 from .lmstudio_openai_chat import LMStudioOpenAIChat
 from tradingagents_tsfm_modified_v5.tradingagents.llms.local_qwen import LocalQwenChat
