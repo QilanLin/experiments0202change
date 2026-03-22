@@ -17,7 +17,7 @@ import pandas as pd
 import numpy as np
 
 from .config import MAG7_TICKERS, CASH_TICKER, ASSET_TICKERS, EXPERIMENT_CONFIG
-from .portfolio_agent import PortfolioDecision, PortfolioState
+from .portfolio_models import PortfolioDecision, PortfolioState
 
 
 @dataclass
