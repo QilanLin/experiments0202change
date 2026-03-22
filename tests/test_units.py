@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import json
 import sys
+import tempfile
 import unittest
 from pathlib import Path
-from types import MethodType
+from types import MethodType, SimpleNamespace
 
 import pandas as pd
 
@@ -15,12 +17,24 @@ from module_loader import load_module
 
 
 data_loader_mod = load_module("data_loader")
+artifact_store_mod = load_module("artifact_store")
+daily_decision_pipeline_mod = load_module("daily_decision_pipeline")
+decision_parser_mod = load_module("decision_parser")
+historical_reliability_mod = load_module("historical_reliability")
+market_context_mod = load_module("market_context")
 portfolio_models_mod = load_module("portfolio_models")
 simulator_components_mod = load_module("simulator_components")
 simulator_models_mod = load_module("simulator_models")
 
 AlphaVantageLoader = data_loader_mod.AlphaVantageLoader
+ArtifactStore = artifact_store_mod.ArtifactStore
+DailyDecisionPipeline = daily_decision_pipeline_mod.DailyDecisionPipeline
+DecisionParser = decision_parser_mod.DecisionParser
+HistoricalReliabilityCalculator = historical_reliability_mod.HistoricalReliabilityCalculator
+DailyMarketContext = market_context_mod.DailyMarketContext
+MarketContextProvider = market_context_mod.MarketContextProvider
 PortfolioDecision = portfolio_models_mod.PortfolioDecision
+PortfolioState = portfolio_models_mod.PortfolioState
 TradingCalendar = simulator_components_mod.TradingCalendar
 SimulationResult = simulator_models_mod.SimulationResult
 
@@ -159,6 +173,256 @@ class PortfolioDecisionTests(unittest.TestCase):
 
         self.assertTrue(valid)
         self.assertEqual(message, "Valid")
+
+
+class DecisionParserTests(unittest.TestCase):
+    def test_parse_without_cash_adds_cash_residual(self) -> None:
+        parser = DecisionParser("llm_tsfm_format_2", tsfm_format=2)
+        output = """```json
+{
+  "action": "rebalance",
+  "weights": {"AAPL": 0.2, "MSFT": 0.3},
+  "confidence": 0.9,
+  "reasoning": "test"
+}
+```"""
+
+        decision = parser.parse(output, current_date="2025-01-02", prompt="prompt")
+
+        self.assertAlmostEqual(decision.weights["AAPL"], 0.2)
+        self.assertAlmostEqual(decision.weights["MSFT"], 0.3)
+        self.assertAlmostEqual(decision.weights["CASH"], 0.5)
+        self.assertAlmostEqual(sum(decision.weights.values()), 1.0)
+
+    def test_parse_with_explicit_cash_clips_and_normalizes_all_assets(self) -> None:
+        parser = DecisionParser("llm_tsfm_format_2", tsfm_format=2)
+        output = """{
+  "action": "rebalance",
+  "weights": {"AAPL": 2.0, "MSFT": -1.0, "CASH": 1.0},
+  "confidence": 0.5,
+  "reasoning": "test"
+}"""
+
+        decision = parser.parse(output, current_date="2025-01-02")
+
+        self.assertAlmostEqual(decision.weights["AAPL"], 0.5)
+        self.assertAlmostEqual(decision.weights["MSFT"], 0.0)
+        self.assertAlmostEqual(decision.weights["CASH"], 0.5)
+        self.assertAlmostEqual(sum(decision.weights.values()), 1.0)
+
+    def test_parse_invalid_output_returns_fallback(self) -> None:
+        parser = DecisionParser("baseline_llm_only", tsfm_format=None)
+
+        decision = parser.parse("not valid json at all", current_date="2025-01-02")
+
+        self.assertEqual(decision.action, "hold")
+        self.assertIn("Failed to parse JSON", decision.reasoning)
+        self.assertAlmostEqual(sum(decision.weights.values()), 1.0)
+        self.assertAlmostEqual(decision.weights["CASH"], 0.0)
+
+
+class HistoricalReliabilityCalculatorTests(unittest.TestCase):
+    def _make_history(self, periods: int = 40) -> pd.DataFrame:
+        dates = pd.date_range("2025-01-01", periods=periods, freq="D")
+        closes = [100.0 + i for i in range(periods)]
+        return pd.DataFrame({"date": dates, "close": closes})
+
+    def test_compute_returns_seven_samples_and_uses_cache(self) -> None:
+        hist = self._make_history(periods=40)
+
+        class FakeForecaster:
+            def __init__(self):
+                self.calls = []
+
+            def forecast_all_formats(
+                self,
+                prices,
+                ticker,
+                forecast_date,
+                save_input=True,
+                input_subdir=None,
+                log_input_save=False,
+            ):
+                self.calls.append(
+                    {
+                        "ticker": ticker,
+                        "forecast_date": forecast_date,
+                        "max_seen_date": prices.index.max().strftime("%Y-%m-%d"),
+                        "input_subdir": input_subdir,
+                    }
+                )
+                return SimpleNamespace(status="ok", ratio_1d=0.01)
+
+        forecaster = FakeForecaster()
+        calc = HistoricalReliabilityCalculator(
+            tsfm_forecaster=forecaster,
+            get_price_history_df=lambda ticker: hist,
+            window_size=7,
+        )
+
+        result_1 = calc.compute("AAPL", "2025-02-06")
+        result_2 = calc.compute("AAPL", "2025-02-06")
+        summary = result_1["past_7_resolved_1d"]
+
+        self.assertEqual(summary["n"], 7)
+        self.assertEqual(len(summary["samples"]), 7)
+        self.assertGreater(summary["mse"], 0.0)
+        self.assertGreaterEqual(summary["normalized_reliability_score"], 0.0)
+        self.assertLessEqual(summary["normalized_reliability_score"], 1.0)
+        self.assertEqual(len(forecaster.calls), 7)
+        self.assertEqual(result_1, result_2)
+        self.assertTrue(
+            all(call["max_seen_date"] <= call["forecast_date"] for call in forecaster.calls)
+        )
+        self.assertTrue(
+            all("historical_reliability/AAPL" in sample["tsfm_input_path"] for sample in summary["samples"])
+        )
+
+    def test_compute_returns_empty_summary_when_history_is_insufficient(self) -> None:
+        hist = self._make_history(periods=20)
+        calc = HistoricalReliabilityCalculator(
+            tsfm_forecaster=SimpleNamespace(
+                forecast_all_formats=lambda *args, **kwargs: SimpleNamespace(status="ok", ratio_1d=0.01)
+            ),
+            get_price_history_df=lambda ticker: hist,
+            window_size=7,
+        )
+
+        summary = calc.compute("AAPL", "2025-01-15")["past_7_resolved_1d"]
+
+        self.assertEqual(summary["n"], 0)
+        self.assertEqual(summary["samples"], [])
+
+
+class MarketContextProviderTests(unittest.TestCase):
+    def _build_provider(self, *, debug: bool = False, slice_fn=None, get_tsfm_forecasts=None):
+        class FakeLoader:
+            def get_simple_fundamentals_asof(self, ticker, asof_date, lag_days=45):
+                return {"ticker": ticker, "asof_date": asof_date}
+
+            def format_simple_fundamentals_for_llm(self, snapshot):
+                return f"fundamentals-{snapshot['ticker']}-{snapshot['asof_date']}"
+
+        price_data = {
+            "AAPL": pd.DataFrame(
+                {
+                    "date": pd.to_datetime(["2025-01-01", "2025-01-02", "2025-01-03", "2025-01-04"]),
+                    "close": [100.0, 101.0, 102.0, 103.0],
+                }
+            ),
+            "MSFT": pd.DataFrame(
+                {
+                    "date": pd.to_datetime(["2025-01-01", "2025-01-02", "2025-01-03"]),
+                    "close": [200.0, 201.0, 202.0],
+                }
+            ),
+        }
+
+        return MarketContextProvider(
+            data_loader=FakeLoader(),
+            get_price_data=lambda: price_data,
+            get_tsfm_forecasts=(
+                get_tsfm_forecasts
+                if get_tsfm_forecasts is not None
+                else lambda: {
+                    "2025-01-03": {
+                        "AAPL": SimpleNamespace(name="aapl"),
+                        "MSFT": SimpleNamespace(name="msft"),
+                    }
+                }
+            ),
+            slice_price_df_upto=(
+                slice_fn
+                if slice_fn is not None
+                else lambda df, date: df[df["date"] <= pd.to_datetime(date)].copy()
+            ),
+            format_tsfm_for_llm=lambda forecast: f"rendered-{forecast.name}",
+            debug=debug,
+        )
+
+    def test_build_trims_price_history_and_adds_cash_weight(self) -> None:
+        provider = self._build_provider()
+        state = PortfolioState(
+            date="2025-01-03",
+            cash=100.0,
+            positions={"AAPL": 1.0, "MSFT": 1.0},
+            prices={"AAPL": 102.0, "MSFT": 202.0},
+            weights={"AAPL": 0.4, "MSFT": 0.6},
+        )
+
+        context = provider.build("2025-01-03", state)
+
+        self.assertEqual(context.fundamentals["AAPL"], "fundamentals-AAPL-2025-01-03")
+        self.assertEqual(context.price_history["AAPL"], [100.0, 101.0, 102.0])
+        self.assertEqual(context.tsfm_forecasts["AAPL"], "rendered-aapl")
+        self.assertEqual(context.current_weights["CASH"], 0.0)
+
+    def test_build_raises_when_debug_detects_future_prices(self) -> None:
+        provider = self._build_provider(
+            debug=True,
+            slice_fn=lambda df, date: df.copy(),
+            get_tsfm_forecasts=lambda: {},
+        )
+        state = PortfolioState(
+            date="2025-01-02",
+            cash=0.0,
+            positions={},
+            prices={},
+            weights={},
+        )
+
+        with self.assertRaises(ValueError):
+            provider.build("2025-01-02", state)
+
+
+class DailyDecisionPipelineTests(unittest.TestCase):
+    def test_pipeline_saves_llm_decision_artifact(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            context = DailyMarketContext(
+                fundamentals={"AAPL": "fa"},
+                price_history={"AAPL": [100.0, 101.0]},
+                tsfm_forecasts={"AAPL": "forecast"},
+                current_weights={"AAPL": 0.5, "CASH": 0.5},
+            )
+
+            class FakeContextProvider:
+                def build(self, date, state):
+                    return context
+
+            class FakeAgent:
+                def decide(self, **kwargs):
+                    return PortfolioDecision(
+                        decision_date=kwargs["current_date"],
+                        weights={"AAPL": 0.5, "MSFT": 0.0, "GOOGL": 0.0, "AMZN": 0.0, "META": 0.0, "TSLA": 0.0, "NVDA": 0.0, "CASH": 0.5},
+                        action="rebalance",
+                        reasoning="ok",
+                        confidence=0.8,
+                        raw_llm_output="{}",
+                        prompt="prompt-text",
+                    )
+
+            pipeline = DailyDecisionPipeline(
+                market_context_provider=FakeContextProvider(),
+                portfolio_agent=FakeAgent(),
+                artifact_store=ArtifactStore(tmpdir),
+                debug=False,
+            )
+            state = PortfolioState(
+                date="2025-01-03",
+                cash=0.0,
+                positions={},
+                prices={},
+                weights={"AAPL": 0.5, "CASH": 0.5},
+            )
+
+            decision = pipeline("2025-01-03", state)
+
+            output_path = Path(tmpdir) / "llm_outputs" / "decision_2025-01-03.json"
+            self.assertTrue(output_path.exists())
+            saved = json.loads(output_path.read_text(encoding="utf-8"))
+            self.assertEqual(saved["decision_date"], "2025-01-03")
+            self.assertEqual(saved["prompt"], "prompt-text")
+            self.assertEqual(decision.action, "rebalance")
 
 
 if __name__ == "__main__":
