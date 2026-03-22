@@ -87,7 +87,6 @@ class PortfolioSimulator:
         all_trades = []
         all_decisions = []
         llm_outputs = []
-        tsfm_outputs = []
         daily_returns = []
         prev_value = self.initial_capital
         
@@ -181,5 +180,4 @@ class PortfolioSimulator:
             trades=all_trades,
             decisions=all_decisions,
             llm_outputs=llm_outputs,
-            tsfm_outputs=tsfm_outputs,
         )

@@ -66,8 +66,13 @@ class AlphaVantageLoader:
         start_date: str = None,
         end_date: str = None,
         lookback_days: int = 365,
+        include_overview_fundamentals: bool = True,
     ) -> Dict[str, Any]:
-        """加载所有数据"""
+        """加载运行期需要的数据。
+
+        主实验路径现在按交易日动态读取 as-of fundamentals，因此 overview
+        fundamentals 仅在显式需要时才预加载，避免每次 run 做一层无效工作。
+        """
         if tickers is None:
             tickers = MAG7_TICKERS
         
@@ -90,10 +95,11 @@ class AlphaVantageLoader:
             except Exception as e:
                 print(f"  Error loading prices for {ticker}: {e}")
             
-            try:
-                result["fundamentals"][ticker] = self.get_fundamentals(ticker)
-            except Exception as e:
-                print(f"  Error loading fundamentals for {ticker}: {e}")
+            if include_overview_fundamentals:
+                try:
+                    result["fundamentals"][ticker] = self.get_fundamentals(ticker)
+                except Exception as e:
+                    print(f"  Error loading fundamentals for {ticker}: {e}")
         
         return result
     

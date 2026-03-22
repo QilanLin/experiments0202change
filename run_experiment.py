@@ -2,14 +2,14 @@
 Run Experiment - 实验运行主脚本
 
 用法:
-    python -m experiments.run_experiment --type baseline --debug
-    python -m experiments.run_experiment --type tsfm_format_3 --days 30
-    python -m experiments.run_experiment --type baseline --debug --mock
-    python -m experiments.run_experiment --type tsfm_format_3 --model timesfm
-    python -m experiments.run_experiment --type tsfm_format_3 --model moirai2
-    python -m experiments.run_experiment --type tsfm_format_3 --model toto
-    python -m experiments.run_experiment --type tsfm_7a --model chronos
-    python -m experiments.run_experiment --type tsfm_7b --model chronos
+    python -m experiments0202change.run_experiment --type baseline --debug
+    python -m experiments0202change.run_experiment --type tsfm_3 --days 30
+    python -m experiments0202change.run_experiment --type baseline --debug --mock
+    python -m experiments0202change.run_experiment --type tsfm_3 --model timesfm
+    python -m experiments0202change.run_experiment --type tsfm_3 --model moirai2
+    python -m experiments0202change.run_experiment --type tsfm_3 --model toto
+    python -m experiments0202change.run_experiment --type tsfm_7a --model chronos
+    python -m experiments0202change.run_experiment --type tsfm_7b --model chronos
 """
 
 from __future__ import annotations
@@ -87,10 +87,10 @@ class ExperimentRunner:
             rebalance_frequency="daily",
             cash_interest=False,  # 默认不启用现金计息（可配置）
         )
+        self.trading_calendar = self.simulator.trading_calendar
         
         # 数据缓存
         self._price_data: Dict[str, pd.DataFrame] = {}
-        self._fundamentals: Dict[str, Dict] = {}
         self._tsfm_forecasts: Dict[str, Dict[str, TSFMForecast]] = {}
         self._price_history_cache: Dict[str, pd.DataFrame] = {}
         self._historical_reliability: Optional[HistoricalReliabilityCalculator] = None
@@ -142,13 +142,13 @@ class ExperimentRunner:
             start_date=start_date,
             end_date=end_date,
             lookback_days=365,  # 免费API限制
+            include_overview_fundamentals=False,
         )
         
         self._price_data = data["prices"]
-        self._fundamentals = data["fundamentals"]
         
         print(f"Loaded price data for {len(self._price_data)} tickers")
-        print(f"Loaded fundamentals for {len(self._fundamentals)} tickers")
+        print("Overview fundamentals preload: skipped (as-of fundamentals are loaded on demand)")
         
         if len(self._price_data) == 0:
             raise ValueError("Failed to load any price data. Check API key and rate limits.")
@@ -304,7 +304,9 @@ class ExperimentRunner:
         # 生成TSFM预测（如果需要）
         if self.tsfm_format:
             # 为每个交易日生成预测
-            trading_days = self._get_trading_days(start_date, end_date)
+            trading_days = self.trading_calendar.get_trading_days(
+                start_date, end_date, self._price_data
+            )
             print(f"[STAGE] Generating TSFM forecasts for {len(trading_days)} trading days", flush=True)
             for date in trading_days:
                 self.generate_tsfm_forecasts(date)
@@ -331,22 +333,6 @@ class ExperimentRunner:
         self._print_summary(result)
         
         return result
-    
-    def _get_trading_days(self, start_date: str, end_date: str) -> list:
-        """获取交易日列表"""
-        first_ticker = list(self._price_data.keys())[0]
-        df = self._price_data[first_ticker]
-        
-        date_col = 'date' if 'date' in df.columns else 'timestamp'
-        dates = pd.to_datetime(df[date_col])
-        
-        start_dt = pd.to_datetime(start_date)
-        end_dt = pd.to_datetime(end_date)
-        
-        mask = (dates >= start_dt) & (dates <= end_dt)
-        trading_days = dates[mask].sort_values()
-        
-        return [d.strftime("%Y-%m-%d") for d in trading_days]
     
     def _print_summary(self, result: SimulationResult):
         """打印结果摘要"""

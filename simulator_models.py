@@ -58,10 +58,12 @@ class SimulationResult:
     decisions: List[PortfolioDecision] = field(default_factory=list)
 
     llm_outputs: List[Dict[str, Any]] = field(default_factory=list)
-    tsfm_outputs: List[Dict[str, Any]] = field(default_factory=list)
+    # TSFM 明细现在由 ArtifactStore 单独落到 results_dir/tsfm_outputs，
+    # 不再默认内嵌进 simulation_result.json，避免结果文件里长期出现空字段。
+    tsfm_outputs: List[Dict[str, Any]] | None = None
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        payload = {
             "experiment_type": self.experiment_type,
             "start_date": self.start_date,
             "end_date": self.end_date,
@@ -78,8 +80,10 @@ class SimulationResult:
             "trades": [t.to_dict() for t in self.trades],
             "decisions": [d.to_dict() for d in self.decisions],
             "llm_outputs": self.llm_outputs,
-            "tsfm_outputs": self.tsfm_outputs,
         }
+        if self.tsfm_outputs:
+            payload["tsfm_outputs"] = self.tsfm_outputs
+        return payload
 
     def save(self, filepath: str):
         """保存结果到JSON"""
