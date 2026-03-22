@@ -49,7 +49,8 @@ from .llm_clients import build_llm_client
 from .market_context import MarketContextProvider
 from .tsfm_forecaster import TSFMForecast, get_forecaster
 from .portfolio_agent import PortfolioWeightAgent
-from .simulator import PortfolioSimulator, SimulationResult
+from .simulator import PortfolioSimulator
+from .simulator_models import SimulationResult
 
 
 class ExperimentRunner:
