@@ -53,6 +53,16 @@ class ArtifactStore:
             json.dump(decision.to_dict(), f, indent=2, default=str)
         return output_path
 
+    def save_llm_input(self, payload: dict[str, Any], *, decision_date: str) -> str:
+        """保存结构化的 LLM 输入快照（market context + messages + prompt）。"""
+        output_path = os.path.join(
+            self.results_dir, "llm_inputs", f"decision_{decision_date}.json"
+        )
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        with open(output_path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2, default=str)
+        return output_path
+
     def simulation_result_path(self) -> str:
         """返回 simulation_result.json 的标准路径。"""
         return os.path.join(self.results_dir, "simulation_result.json")

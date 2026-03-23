@@ -418,7 +418,7 @@ class MarketContextProviderTests(unittest.TestCase):
 
 
 class DailyDecisionPipelineTests(unittest.TestCase):
-    def test_pipeline_saves_llm_decision_artifact(self) -> None:
+    def test_pipeline_saves_structured_llm_input_and_decision_artifacts(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             context = DailyMarketContext(
                 fundamentals={"AAPL": "fa"},
@@ -432,9 +432,22 @@ class DailyDecisionPipelineTests(unittest.TestCase):
                     return context
 
             class FakeAgent:
-                def decide(self, **kwargs):
+                experiment_type = "llm_tsfm_format_7a"
+                tsfm_format = 7
+
+                def prepare_request(self, **kwargs):
+                    return {
+                        "decision_date": kwargs["current_date"],
+                        "messages": [
+                            {"role": "system", "content": "system"},
+                            {"role": "user", "content": "user"},
+                        ],
+                        "prompt": "prompt-text",
+                    }
+
+                def decide_from_request(self, prepared_request):
                     return PortfolioDecision(
-                        decision_date=kwargs["current_date"],
+                        decision_date=prepared_request["decision_date"],
                         weights={"AAPL": 0.5, "MSFT": 0.0, "GOOGL": 0.0, "AMZN": 0.0, "META": 0.0, "TSLA": 0.0, "NVDA": 0.0, "CASH": 0.5},
                         action="rebalance",
                         reasoning="ok",
@@ -459,9 +472,18 @@ class DailyDecisionPipelineTests(unittest.TestCase):
 
             decision = pipeline("2025-01-03", state)
 
+            input_path = Path(tmpdir) / "llm_inputs" / "decision_2025-01-03.json"
             output_path = Path(tmpdir) / "llm_outputs" / "decision_2025-01-03.json"
+            self.assertTrue(input_path.exists())
             self.assertTrue(output_path.exists())
+
+            saved_input = json.loads(input_path.read_text(encoding="utf-8"))
             saved = json.loads(output_path.read_text(encoding="utf-8"))
+            self.assertEqual(saved_input["decision_date"], "2025-01-03")
+            self.assertEqual(saved_input["market_context"]["fundamentals"]["AAPL"], "fa")
+            self.assertEqual(saved_input["messages"][0]["role"], "system")
+            self.assertEqual(saved_input["prompt"], "prompt-text")
+            self.assertEqual(saved_input["tsfm_format"], 7)
             self.assertEqual(saved["decision_date"], "2025-01-03")
             self.assertEqual(saved["prompt"], "prompt-text")
             self.assertEqual(decision.action, "rebalance")

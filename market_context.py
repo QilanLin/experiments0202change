@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from typing import Any, Callable, Dict, Optional
 
 import pandas as pd
@@ -17,6 +17,9 @@ class DailyMarketContext:
     price_history: Dict[str, Any]
     tsfm_forecasts: Optional[Dict[str, str]]
     current_weights: Dict[str, float]
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
 
 
 class MarketContextProvider:

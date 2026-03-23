@@ -26,14 +26,28 @@ class DailyDecisionPipeline:
         print(f"[STAGE] Starting LLM decision for {date}", flush=True)
 
         context = self.market_context_provider.build(date, state)
-
-        decision = self.portfolio_agent.decide(
+        prepared_request = self.portfolio_agent.prepare_request(
             current_date=date,
             fundamentals=context.fundamentals,
             price_history=context.price_history,
             tsfm_forecasts=context.tsfm_forecasts,
             current_weights=context.current_weights,
         )
+        llm_input_payload = {
+            "decision_date": date,
+            "market_context": context.to_dict(),
+            "messages": prepared_request["messages"],
+            "prompt": prepared_request["prompt"],
+            "experiment_type": self.portfolio_agent.experiment_type,
+            "tsfm_format": self.portfolio_agent.tsfm_format,
+        }
+        llm_input_path = self.artifact_store.save_llm_input(
+            llm_input_payload,
+            decision_date=date,
+        )
+        print(f"[STAGE] Saved LLM input for {date} -> {llm_input_path}", flush=True)
+
+        decision = self.portfolio_agent.decide_from_request(prepared_request)
 
         if self.debug:
             weights_sum = sum(decision.weights.values())

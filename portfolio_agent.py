@@ -59,6 +59,39 @@ IMPORTANT: Weights MUST sum to 1.0 exactly. All 8 assets (7 stocks + CASH) must 
             tsfm_format=tsfm_format,
         )
 
+    def prepare_request(
+            self,
+            current_date: str,
+            fundamentals: Dict[str, str],
+            price_history: Dict[str, Any],
+            tsfm_forecasts: Optional[Dict[str, str]] = None,
+            current_weights: Optional[Dict[str, float]] = None,
+    ) -> Dict[str, Any]:
+        """构造给 LLM 的结构化输入。"""
+        user_context = self.prompt_builder.build_context(
+            current_date, fundamentals, price_history,
+            tsfm_forecasts, current_weights
+        )
+        messages = self.prompt_builder.build_messages(self.SYSTEM_PROMPT, user_context)
+        prompt_str = self.prompt_builder.format_prompt_for_saving(messages)
+        return {
+            "decision_date": current_date,
+            "messages": messages,
+            "prompt": prompt_str,
+        }
+
+    def decide_from_request(self, prepared_request: Dict[str, Any]) -> PortfolioDecision:
+        """使用已准备好的 messages 调 LLM，并解析输出。"""
+        current_date = prepared_request["decision_date"]
+        messages = prepared_request["messages"]
+        prompt_str = prepared_request["prompt"]
+
+        result = self.llm.invoke(messages)
+        output = result.content if hasattr(result, 'content') else str(result)
+
+        self.decision_parser.debug = getattr(self, "debug", False)
+        return self.decision_parser.parse(output, current_date, prompt_str)
+
     def decide(
             self,
             current_date: str,
@@ -68,18 +101,8 @@ IMPORTANT: Weights MUST sum to 1.0 exactly. All 8 assets (7 stocks + CASH) must 
             current_weights: Optional[Dict[str, float]] = None,
     ) -> PortfolioDecision:
         """做出权重决策"""
-        context = self.prompt_builder.build_context(
+        prepared_request = self.prepare_request(
             current_date, fundamentals, price_history,
             tsfm_forecasts, current_weights
         )
-
-        messages = self.prompt_builder.build_messages(self.SYSTEM_PROMPT, context)
-
-        # 将提示词转换为字符串格式以便保存
-        prompt_str = self.prompt_builder.format_prompt_for_saving(messages)
-
-        result = self.llm.invoke(messages)
-        output = result.content if hasattr(result, 'content') else str(result)
-
-        self.decision_parser.debug = getattr(self, "debug", False)
-        return self.decision_parser.parse(output, current_date, prompt_str)
+        return self.decide_from_request(prepared_request)
