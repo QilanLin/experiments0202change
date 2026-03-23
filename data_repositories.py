@@ -92,6 +92,22 @@ class PriceRepository(CachedRepository):
         normalized = normalized.sort_values("date").reset_index(drop=True)
         return normalized
 
+    def _load_exact_cache_snapshot(self, cache_path: str) -> Optional[pd.DataFrame]:
+        """优先复用请求对应的精确缓存快照。
+
+        对回测来说，历史价格文件一旦落盘，本身就是一个固定输入快照；这里即使
+        mtime 已经过期，也优先复用 exact cache，而不是切换到另一份覆盖更广的
+        本地 CSV。这样能最大限度保持旧实验的可复现性。
+        """
+        if not os.path.exists(cache_path):
+            return None
+
+        try:
+            normalized = self._normalize_price_cache_df(pd.read_csv(cache_path))
+        except Exception:
+            return None
+        return normalized
+
     def _load_best_local_price_cache(
         self,
         ticker: str,
@@ -175,6 +191,10 @@ class PriceRepository(CachedRepository):
             cached = self.load_from_cache(cache_path)
             if cached is not None:
                 return cached
+            exact_snapshot = self._load_exact_cache_snapshot(cache_path)
+            if exact_snapshot is not None:
+                print(f"  Using exact cached prices for {ticker} from {cache_path}")
+                return exact_snapshot
             best_local_cache = self._load_best_local_price_cache(ticker, start_date, end_date)
             if best_local_cache is not None:
                 return best_local_cache

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 import tempfile
 import unittest
@@ -17,6 +18,7 @@ from module_loader import load_module
 
 
 data_loader_mod = load_module("data_loader")
+data_repositories_mod = load_module("data_repositories")
 artifact_store_mod = load_module("artifact_store")
 daily_decision_pipeline_mod = load_module("daily_decision_pipeline")
 decision_parser_mod = load_module("decision_parser")
@@ -27,6 +29,7 @@ simulator_components_mod = load_module("simulator_components")
 simulator_models_mod = load_module("simulator_models")
 
 AlphaVantageLoader = data_loader_mod.AlphaVantageLoader
+PriceRepository = data_repositories_mod.PriceRepository
 ArtifactStore = artifact_store_mod.ArtifactStore
 DailyDecisionPipeline = daily_decision_pipeline_mod.DailyDecisionPipeline
 DecisionParser = decision_parser_mod.DecisionParser
@@ -93,6 +96,45 @@ class AlphaVantageLoaderTests(unittest.TestCase):
 
         self.assertEqual(sorted(result["fundamentals"].keys()), ["AAPL", "MSFT"])
         self.assertEqual(fundamentals_calls, ["AAPL", "MSFT"])
+
+
+class PriceRepositoryTests(unittest.TestCase):
+    def test_exact_plain_cache_snapshot_beats_broader_local_candidates(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = PriceRepository(client=SimpleNamespace(), cache_dir=tmpdir)
+            price_dir = Path(tmpdir) / "price"
+            exact_path = price_dir / "AAPL_plain_daily_2025-01-31_2026-01-31.csv"
+            broad_path = price_dir / "AAPL_adjusted_2025-01-16_2026-01-16.csv"
+
+            exact_df = pd.DataFrame(
+                {
+                    "date": ["2025-10-15", "2026-01-02", "2026-01-31"],
+                    "close": [100.0, 101.0, 102.0],
+                }
+            )
+            broad_df = pd.DataFrame(
+                {
+                    "date": ["2025-01-16", "2025-10-15", "2026-01-02", "2026-01-31"],
+                    "close": [50.0, 150.0, 151.0, 152.0],
+                    "adjusted_close": [50.0, 150.0, 151.0, 152.0],
+                }
+            )
+            exact_df.to_csv(exact_path, index=False)
+            broad_df.to_csv(broad_path, index=False)
+
+            # 让 exact cache 变成“旧文件”，覆盖本次修复要防止的回归场景。
+            stale_time = 1
+            os.utime(exact_path, (stale_time, stale_time))
+
+            loaded = repo.get_daily_prices(
+                "AAPL",
+                start_date="2025-01-31",
+                end_date="2026-01-31",
+                use_cache=True,
+            )
+
+            self.assertEqual(len(loaded), 3)
+            self.assertListEqual(loaded["close"].tolist(), [100.0, 101.0, 102.0])
 
 
 class TradingCalendarTests(unittest.TestCase):
