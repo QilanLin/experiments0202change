@@ -1,27 +1,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from decimal import Decimal, ROUND_HALF_UP
 from typing import Any, Callable, Dict
-
-
-_DISPLAY_RATIO_QUANTUM = Decimal("0.0000001")
-
-
-def _format_numeric(value: Any) -> str:
-    return f"{float(value):.6f}"
-
-
-def _format_ratio_percent(value: Any) -> str:
-    """
-    对写进 prompt 的收益率先做稳定量化，避免 1e-8 级别的浮点漂移
-    被 6 位小数格式化放大成文本差异。
-    """
-    quantized_ratio = Decimal(str(float(value))).quantize(
-        _DISPLAY_RATIO_QUANTUM,
-        rounding=ROUND_HALF_UP,
-    )
-    return f"{quantized_ratio * Decimal('100'):.6f}%"
 
 
 class RendererContext:
@@ -58,8 +38,8 @@ class Format1Renderer(BaseFormatRenderer):
         # 格式1：数字，接下来30天
         ticker = forecast.ticker
         return f"TSFM Forecast for {ticker} (30-day price prediction):\n" \
-               f"Day 1-5: {[_format_numeric(p) for p in forecast.numeric_30d[:5]]}\n" \
-               f"Day 26-30: {[_format_numeric(p) for p in forecast.numeric_30d[-5:]]}"
+               f"Day 1-5: {[f'{p:.6f}' for p in forecast.numeric_30d[:5]]}\n" \
+               f"Day 26-30: {[f'{p:.6f}' for p in forecast.numeric_30d[-5:]]}"
 
 
 class Format2Renderer(BaseFormatRenderer):
@@ -69,8 +49,8 @@ class Format2Renderer(BaseFormatRenderer):
         # 格式2：比例，接下来30天
         ticker = forecast.ticker
         return f"TSFM Forecast for {ticker} (30-day return prediction):\n" \
-               f"Day 1-5: {[_format_ratio_percent(r) for r in forecast.ratio_30d[:5]]}\n" \
-               f"Day 26-30: {[_format_ratio_percent(r) for r in forecast.ratio_30d[-5:]]}"
+               f"Day 1-5: {[f'{r * 100:.6f}%' for r in forecast.ratio_30d[:5]]}\n" \
+               f"Day 26-30: {[f'{r * 100:.6f}%' for r in forecast.ratio_30d[-5:]]}"
 
 
 class Format3Renderer(BaseFormatRenderer):
@@ -86,7 +66,7 @@ class Format3Renderer(BaseFormatRenderer):
         lines = [f"TSFM Forecast for {ticker} (multi-horizon returns):"]
         for spec in context.horizon_specs:
             ratio = getattr(forecast, spec.ratio_attr)
-            lines.append(f"{spec.label}: {_format_ratio_percent(ratio)}")
+            lines.append(f"{spec.label}: {ratio * 100:.6f}%")
         return "\n".join(lines)
 
 
@@ -101,9 +81,9 @@ class Format4Renderer(BaseFormatRenderer):
         q05 = forecast.numeric_quantile_30d["0.05"]
         q95 = forecast.numeric_quantile_30d["0.95"]
         return f"TSFM Forecast for {ticker} (30-day quantile prices):\n" \
-               f"Median (50%): Day30=${_format_numeric(q50[-1])} {expl_50}\n" \
-               f"5th percentile: Day30=${_format_numeric(q05[-1])} {expl_05}\n" \
-               f"95th percentile: Day30=${_format_numeric(q95[-1])} {expl_95}"
+               f"Median (50%): Day30=${q50[-1]:.6f} {expl_50}\n" \
+               f"5th percentile: Day30=${q05[-1]:.6f} {expl_05}\n" \
+               f"95th percentile: Day30=${q95[-1]:.6f} {expl_95}"
 
 
 class Format5Renderer(BaseFormatRenderer):
@@ -123,7 +103,7 @@ class Format5Renderer(BaseFormatRenderer):
                 note = f" {expl_50}"
             if q == "0.95":
                 note = f" {expl_95}"
-            lines.append(f"  {q} quantile: {_format_ratio_percent(r)}{note}")
+            lines.append(f"  {q} quantile: {r * 100:.6f}%{note}")
         return "\n".join(lines)
 
 
@@ -164,7 +144,7 @@ class BaseFormat7Renderer(BaseFormatRenderer):
         lines = [f"TSFM Forecast for {ticker} (multi-horizon returns):"]
         for spec in context.horizon_specs:
             ratio = getattr(forecast, spec.ratio_attr)
-            lines.append(f"{spec.label}: {_format_ratio_percent(ratio)}")
+            lines.append(f"{spec.label}: {ratio * 100:.6f}%")
         lines.extend([
             "",
             f"TSFM Historical Reliability for {ticker} (computed from the last 7 resolved 1D forecasts before {forecast.forecast_date}):",
