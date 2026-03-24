@@ -22,6 +22,8 @@ data_repositories_mod = load_module("data_repositories")
 artifact_store_mod = load_module("artifact_store")
 daily_decision_pipeline_mod = load_module("daily_decision_pipeline")
 decision_parser_mod = load_module("decision_parser")
+format_registry_mod = load_module("format_registry")
+format_renderers_mod = load_module("format_renderers")
 historical_reliability_mod = load_module("historical_reliability")
 market_context_mod = load_module("market_context")
 portfolio_models_mod = load_module("portfolio_models")
@@ -33,6 +35,9 @@ PriceRepository = data_repositories_mod.PriceRepository
 ArtifactStore = artifact_store_mod.ArtifactStore
 DailyDecisionPipeline = daily_decision_pipeline_mod.DailyDecisionPipeline
 DecisionParser = decision_parser_mod.DecisionParser
+HORIZON_SPECS = format_registry_mod.HORIZON_SPECS
+RendererContext = format_renderers_mod.RendererContext
+Format7ARenderer = format_renderers_mod.Format7ARenderer
 HistoricalReliabilityCalculator = historical_reliability_mod.HistoricalReliabilityCalculator
 DailyMarketContext = market_context_mod.DailyMarketContext
 MarketContextProvider = market_context_mod.MarketContextProvider
@@ -261,6 +266,60 @@ class DecisionParserTests(unittest.TestCase):
         self.assertIn("Failed to parse JSON", decision.reasoning)
         self.assertAlmostEqual(sum(decision.weights.values()), 1.0)
         self.assertAlmostEqual(decision.weights["CASH"], 0.0)
+
+
+class FormatRendererTests(unittest.TestCase):
+    def test_format7a_ignores_tiny_ratio_noise_in_prompt_text(self) -> None:
+        context = RendererContext(
+            horizon_specs=HORIZON_SPECS,
+            quantiles=[],
+            quantile_keys=lambda: [],
+            quantile_explanations=lambda: ("", "", ""),
+        )
+        base_reliability = {
+            "past_7_resolved_1d": {
+                "n": 7,
+                "window_size": 7,
+                "samples": [
+                    {
+                        "forecast_origin_date": "2025-08-20",
+                        "resolved_target_date": "2025-08-21",
+                        "squared_error": 0.0001,
+                    }
+                ],
+            }
+        }
+        forecast_1 = SimpleNamespace(
+            ticker="META",
+            forecast_date="2025-09-02",
+            ratio_1d=0.001,
+            ratio_1w=-0.01520634,
+            ratio_2w=-0.03282554,
+            ratio_3w=-0.03851112,
+            ratio_4w=-0.04165463,
+            status="ok",
+            error=None,
+            historical_reliability=base_reliability,
+        )
+        forecast_2 = SimpleNamespace(
+            ticker="META",
+            forecast_date="2025-09-02",
+            ratio_1d=0.001,
+            ratio_1w=-0.01520634,
+            ratio_2w=-0.03282554,
+            ratio_3w=-0.03851112,
+            ratio_4w=-0.04165464,
+            status="ok",
+            error=None,
+            historical_reliability=base_reliability,
+        )
+
+        renderer = Format7ARenderer()
+        rendered_1 = renderer.render(forecast_1, context)
+        rendered_2 = renderer.render(forecast_2, context)
+
+        self.assertEqual(rendered_1, rendered_2)
+        self.assertIn("4 Weeks: -4.165460%", rendered_1)
 
 
 class HistoricalReliabilityCalculatorTests(unittest.TestCase):
