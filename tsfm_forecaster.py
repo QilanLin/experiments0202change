@@ -315,7 +315,9 @@ class TSFMForecaster:
 
             result.numeric_30d = median_30d.tolist()
             result.ratio_30d = ((median_30d - last_close) / last_close).tolist()
-            self._assign_ratio_horizons(result, result.ratio_30d)
+            # 保持 7dd225a 时代的行为：顶层 ratio_* 直接走 numpy scalar 路径，
+            # 避免先转 list 再回填时改变保存到 tsfm_outputs 的数值表示。
+            self._assign_ratio_horizons_from_values(result, median_30d, last_close)
 
             result.numeric_quantile_30d = {}
             for q in self.QUANTILES:
@@ -426,6 +428,19 @@ class TSFMForecaster:
     def _assign_ratio_horizons(self, forecast: TSFMForecast, ratios: List[float]) -> None:
         for spec in HORIZON_SPECS:
             setattr(forecast, spec.ratio_attr, ratios[spec.days - 1])
+
+    def _assign_ratio_horizons_from_values(
+        self,
+        forecast: TSFMForecast,
+        horizon_values: np.ndarray,
+        last_close: float,
+    ) -> None:
+        for spec in HORIZON_SPECS:
+            setattr(
+                forecast,
+                spec.ratio_attr,
+                (horizon_values[spec.days - 1] - last_close) / last_close,
+            )
 
     def _build_ratio_quantile_multi(self, q_values: np.ndarray, last_close: float) -> Dict[str, float]:
         return {
