@@ -52,6 +52,15 @@ class PriceRepository(CachedRepository):
         super().__init__(cache_dir, "price")
         self.client = client
 
+    def _candidate_price_dirs(self) -> List[Path]:
+        dirs = [Path(self.cache_dir) / "price"]
+        cache_root = Path(self.cache_dir).resolve()
+        if cache_root.name == "data_cache":
+            shared_price_dir = cache_root.parent.parent / "data_cache" / "price"
+            if shared_price_dir not in dirs:
+                dirs.append(shared_price_dir)
+        return dirs
+
     def _normalize_price_cache_df(self, df: pd.DataFrame) -> Optional[pd.DataFrame]:
         if df is None or df.empty:
             return None
@@ -114,45 +123,49 @@ class PriceRepository(CachedRepository):
         start_date: str,
         end_date: str,
     ) -> Optional[pd.DataFrame]:
-        price_dir = Path(self.cache_dir) / "price"
-        if not price_dir.exists():
-            return None
-
         start_dt = pd.to_datetime(start_date)
         end_dt = pd.to_datetime(end_date)
         candidates = []
+        seen_paths = set()
 
-        for cache_file in sorted(price_dir.glob(f"{ticker}*.csv")):
-            try:
-                normalized = self._normalize_price_cache_df(pd.read_csv(cache_file))
-            except Exception:
+        for price_dir in self._candidate_price_dirs():
+            if not price_dir.exists():
                 continue
-            if normalized is None or normalized.empty:
-                continue
+            for cache_file in sorted(price_dir.glob(f"{ticker}*.csv")):
+                cache_path = str(cache_file.resolve())
+                if cache_path in seen_paths:
+                    continue
+                seen_paths.add(cache_path)
+                try:
+                    normalized = self._normalize_price_cache_df(pd.read_csv(cache_file))
+                except Exception:
+                    continue
+                if normalized is None or normalized.empty:
+                    continue
 
-            file_start = normalized["date"].min()
-            file_end = normalized["date"].max()
-            covers_range = file_start <= start_dt and file_end >= end_dt
-            overlaps_range = file_end >= start_dt and file_start <= end_dt
-            if not overlaps_range:
-                continue
+                file_start = normalized["date"].min()
+                file_end = normalized["date"].max()
+                covers_range = file_start <= start_dt and file_end >= end_dt
+                overlaps_range = file_end >= start_dt and file_start <= end_dt
+                if not overlaps_range:
+                    continue
 
-            sliced = normalized[
-                (normalized["date"] >= start_dt) & (normalized["date"] <= end_dt)
-            ].copy()
-            if sliced.empty:
-                continue
+                sliced = normalized[
+                    (normalized["date"] >= start_dt) & (normalized["date"] <= end_dt)
+                ].copy()
+                if sliced.empty:
+                    continue
 
-            candidates.append(
-                {
-                    "path": str(cache_file),
-                    "df": sliced.reset_index(drop=True),
-                    "covers_range": covers_range,
-                    "rows": len(sliced),
-                    "file_start": file_start,
-                    "file_end": file_end,
-                }
-            )
+                candidates.append(
+                    {
+                        "path": str(cache_file),
+                        "df": sliced.reset_index(drop=True),
+                        "covers_range": covers_range,
+                        "rows": len(sliced),
+                        "file_start": file_start,
+                        "file_end": file_end,
+                    }
+                )
 
         if not candidates:
             return None
@@ -189,8 +202,13 @@ class PriceRepository(CachedRepository):
 
         if use_cache:
             cached = self.load_from_cache(cache_path)
-            if cached is not None:
-                return cached
+            normalized_cached = (
+                self._normalize_price_cache_df(cached)
+                if isinstance(cached, pd.DataFrame)
+                else None
+            )
+            if normalized_cached is not None:
+                return normalized_cached
             exact_snapshot = self._load_exact_cache_snapshot(cache_path)
             if exact_snapshot is not None:
                 print(f"  Using exact cached prices for {ticker} from {cache_path}")
@@ -210,9 +228,17 @@ class PriceRepository(CachedRepository):
             csv_data = self.client.make_request(params)
         except Exception:
             stale_cached = self.load_from_cache(cache_path, allow_stale=True) if use_cache else None
-            if stale_cached is not None:
+            normalized_stale = (
+                self._normalize_price_cache_df(stale_cached)
+                if isinstance(stale_cached, pd.DataFrame)
+                else None
+            )
+            if normalized_stale is not None:
                 print(f"  Falling back to stale price cache for {ticker}")
-                return stale_cached
+                return normalized_stale
+            best_local_cache = self._load_best_local_price_cache(ticker, start_date, end_date)
+            if best_local_cache is not None:
+                return best_local_cache
             raise
 
         if csv_data.strip().startswith("{"):
@@ -246,6 +272,15 @@ class PriceRepository(CachedRepository):
         end_dt = pd.to_datetime(end_date)
         df = df[(df[date_col] >= start_dt) & (df[date_col] <= end_dt)]
         df = df.sort_values(date_col).reset_index(drop=True)
+
+        if df.empty:
+            best_local_cache = self._load_best_local_price_cache(ticker, start_date, end_date)
+            if best_local_cache is not None:
+                print(f"  Falling back to local cached prices for {ticker} after empty API slice")
+                return best_local_cache
+            raise ValueError(
+                f"No price rows available for {ticker} between {start_date} and {end_date}"
+            )
 
         if date_col == "timestamp":
             df = df.rename(columns={"timestamp": "date"})

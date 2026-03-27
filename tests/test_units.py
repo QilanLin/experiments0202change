@@ -152,6 +152,77 @@ class PriceRepositoryTests(unittest.TestCase):
             self.assertEqual(len(loaded), 3)
             self.assertListEqual(loaded["close"].tolist(), [100.0, 101.0, 102.0])
 
+    def test_empty_fresh_cache_falls_back_to_shared_local_price_cache(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir)
+            repo_cache_dir = workspace / "experiments0202change" / "data_cache"
+            repo = PriceRepository(client=SimpleNamespace(), cache_dir=str(repo_cache_dir))
+
+            repo_price_dir = repo_cache_dir / "price"
+            shared_price_dir = workspace / "data_cache" / "price"
+            repo_price_dir.mkdir(parents=True, exist_ok=True)
+            shared_price_dir.mkdir(parents=True, exist_ok=True)
+
+            empty_exact = repo_price_dir / "AAPL_plain_daily_2024-09-30_2025-09-30.csv"
+            empty_exact.write_text(
+                "date,open,high,low,close,volume,raw_close\n",
+                encoding="utf-8",
+            )
+            shared_cache = shared_price_dir / "AAPL_adjusted_2024-09-30_2025-09-30.csv"
+            pd.DataFrame(
+                {
+                    "date": ["2025-09-29", "2025-09-30"],
+                    "close": [200.0, 201.0],
+                    "adjusted_close": [200.0, 201.0],
+                }
+            ).to_csv(shared_cache, index=False)
+
+            loaded = repo.get_daily_prices(
+                "AAPL",
+                start_date="2024-09-30",
+                end_date="2025-09-30",
+                use_cache=True,
+            )
+
+            self.assertEqual(len(loaded), 2)
+            self.assertListEqual(loaded["close"].tolist(), [200.0, 201.0])
+
+    def test_empty_api_slice_falls_back_to_shared_cache_without_writing_empty_exact_cache(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir)
+            repo_cache_dir = workspace / "experiments0202change" / "data_cache"
+            shared_price_dir = workspace / "data_cache" / "price"
+            shared_price_dir.mkdir(parents=True, exist_ok=True)
+
+            class FakeClient:
+                def make_request(self, params):
+                    return (
+                        "timestamp,open,high,low,close,volume\n"
+                        "2026-03-27,10,11,9,10.5,1000\n"
+                    )
+
+            repo = PriceRepository(client=FakeClient(), cache_dir=str(repo_cache_dir))
+            shared_cache = shared_price_dir / "AAPL_adjusted_2024-09-30_2025-09-30.csv"
+            pd.DataFrame(
+                {
+                    "date": ["2025-09-29", "2025-09-30"],
+                    "close": [300.0, 301.0],
+                    "adjusted_close": [300.0, 301.0],
+                }
+            ).to_csv(shared_cache, index=False)
+
+            loaded = repo.get_daily_prices(
+                "AAPL",
+                start_date="2024-09-30",
+                end_date="2025-09-30",
+                use_cache=True,
+            )
+
+            exact_path = repo_cache_dir / "price" / "AAPL_plain_daily_2024-09-30_2025-09-30.csv"
+            self.assertEqual(len(loaded), 2)
+            self.assertListEqual(loaded["close"].tolist(), [300.0, 301.0])
+            self.assertFalse(exact_path.exists())
+
 
 class TradingCalendarTests(unittest.TestCase):
     def test_get_trading_days_returns_sorted_dates_in_range(self) -> None:
