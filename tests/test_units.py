@@ -8,6 +8,7 @@ import unittest
 from pathlib import Path
 from types import MethodType, SimpleNamespace
 
+import numpy as np
 import pandas as pd
 
 TESTS_DIR = Path(__file__).resolve().parent
@@ -49,6 +50,7 @@ PortfolioDecision = portfolio_models_mod.PortfolioDecision
 PortfolioState = portfolio_models_mod.PortfolioState
 TradingCalendar = simulator_components_mod.TradingCalendar
 SimulationResult = simulator_models_mod.SimulationResult
+TSFMForecaster = load_module("tsfm_forecaster").TSFMForecaster
 validate_timesfm_quantiles_strict = timesfm_forecaster_mod._validate_requested_quantiles_strict
 
 
@@ -354,6 +356,53 @@ class QuantileDefinitionTests(unittest.TestCase):
         self.assertIn("10th=", rendered_6)
         self.assertIn("90th=", rendered_6)
         self.assertNotIn("95th", rendered_6)
+
+
+class TSFMDtypeProtocolTests(unittest.TestCase):
+    def test_run_forecast_normalizes_backend_float32_output_to_float64(self) -> None:
+        forecaster = TSFMForecaster.__new__(TSFMForecaster)
+
+        class FakeBackend:
+            def predict_df(self, context_df, prediction_length, quantile_levels):
+                return pd.DataFrame(
+                    {
+                        "id": ["AAPL", "AAPL"],
+                        "timestamp": pd.date_range("2025-01-01", periods=2, freq="D"),
+                        "predictions": np.array([101.0, 102.0], dtype=np.float32),
+                        "0.1": np.array([100.0, 101.0], dtype=np.float32),
+                        "0.5": np.array([101.0, 102.0], dtype=np.float32),
+                        "0.9": np.array([102.0, 103.0], dtype=np.float32),
+                    }
+                )
+
+        forecaster.backend = FakeBackend()
+        context_df = pd.DataFrame(
+            {
+                "id": ["AAPL", "AAPL"],
+                "timestamp": pd.date_range("2024-12-30", periods=2, freq="D"),
+                "target": [99.0, 100.0],
+            }
+        )
+
+        pred_df = TSFMForecaster._run_forecast(
+            forecaster,
+            context_df,
+            prediction_length=2,
+            quantile_levels=[0.1, 0.5, 0.9],
+        )
+
+        self.assertEqual(pred_df["predictions"].dtype, np.float64)
+        self.assertEqual(pred_df["0.1"].dtype, np.float64)
+        self.assertEqual(pred_df["0.5"].dtype, np.float64)
+        self.assertEqual(pred_df["0.9"].dtype, np.float64)
+
+    def test_extract_quantile_always_returns_float64_array(self) -> None:
+        forecaster = TSFMForecaster.__new__(TSFMForecaster)
+        pred_df = pd.DataFrame({"0.5": np.array([1.0, 2.0], dtype=np.float32)})
+
+        q_values = TSFMForecaster._extract_quantile(forecaster, pred_df, 0.5)
+
+        self.assertEqual(q_values.dtype, np.float64)
 
 
 class HistoricalReliabilityCalculatorTests(unittest.TestCase):

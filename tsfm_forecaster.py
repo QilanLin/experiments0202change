@@ -213,19 +213,36 @@ class TSFMForecaster:
         返回:
             预测结果 DataFrame
         """
-        return self.backend.predict_df(
+        pred_df = self.backend.predict_df(
             context_df,
             prediction_length=prediction_length,
             quantile_levels=quantile_levels,
         )
+        return self._normalize_prediction_frame_dtype(pred_df, quantile_levels)
+
+    def _normalize_prediction_frame_dtype(
+            self,
+            pred_df: pd.DataFrame,
+            quantile_levels: List[float],
+    ) -> pd.DataFrame:
+        """
+        统一 backend 输出后的数值 dtype：在进入 TSFM 派生计算前固定为 float64。
+        """
+        numeric_cols = {"predictions"}
+        for q in quantile_levels:
+            numeric_cols.update({str(q), f"{q:.2f}", f"{q:.1f}", f"{q}"})
+        for col in numeric_cols:
+            if col in pred_df.columns:
+                pred_df[col] = pd.to_numeric(pred_df[col], errors="raise").astype(np.float64)
+        return pred_df
 
     def _extract_quantile(self, df: pd.DataFrame, q: float) -> np.ndarray:
         """从预测结果中提取分位数"""
         for key in (q, str(q), f"{q:.2f}", f"{q:.1f}", f"{q}"):
             if key in df.columns:
-                return df[key].values
+                return np.asarray(df[key].values, dtype=np.float64)
         if q == 0.5 and "predictions" in df.columns:
-            return df["predictions"].values
+            return np.asarray(df["predictions"].values, dtype=np.float64)
         available_cols = list(df.columns)
         raise KeyError(
             f"Missing quantile column for q={q}. "
