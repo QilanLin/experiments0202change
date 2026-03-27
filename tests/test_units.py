@@ -363,7 +363,7 @@ class QuantileDefinitionTests(unittest.TestCase):
 
 
 class TSFMDtypeProtocolTests(unittest.TestCase):
-    def test_run_forecast_normalizes_backend_float32_output_to_float64(self) -> None:
+    def test_run_forecast_preserves_backend_float32_output_dtype(self) -> None:
         forecaster = TSFMForecaster.__new__(TSFMForecaster)
 
         class FakeBackend:
@@ -395,18 +395,41 @@ class TSFMDtypeProtocolTests(unittest.TestCase):
             quantile_levels=[0.1, 0.5, 0.9],
         )
 
-        self.assertEqual(pred_df["predictions"].dtype, np.float64)
-        self.assertEqual(pred_df["0.1"].dtype, np.float64)
-        self.assertEqual(pred_df["0.5"].dtype, np.float64)
-        self.assertEqual(pred_df["0.9"].dtype, np.float64)
+        self.assertEqual(pred_df["predictions"].dtype, np.float32)
+        self.assertEqual(pred_df["0.1"].dtype, np.float32)
+        self.assertEqual(pred_df["0.5"].dtype, np.float32)
+        self.assertEqual(pred_df["0.9"].dtype, np.float32)
 
-    def test_extract_quantile_always_returns_float64_array(self) -> None:
+    def test_extract_quantile_preserves_backend_dtype(self) -> None:
         forecaster = TSFMForecaster.__new__(TSFMForecaster)
         pred_df = pd.DataFrame({"0.5": np.array([1.0, 2.0], dtype=np.float32)})
 
         q_values = TSFMForecaster._extract_quantile(forecaster, pred_df, 0.5)
 
-        self.assertEqual(q_values.dtype, np.float64)
+        self.assertEqual(q_values.dtype, np.float32)
+
+    def test_ratio_helpers_compute_in_backend_dtype_but_store_python_floats(self) -> None:
+        forecaster = TSFMForecaster.__new__(TSFMForecaster)
+        forecast = SimpleNamespace()
+        horizon_values = np.array([101.0] * 30, dtype=np.float32)
+
+        TSFMForecaster._assign_ratio_horizons_from_values(
+            forecaster,
+            forecast,
+            horizon_values,
+            last_close=100.0,
+        )
+        ratio_quantile_multi = TSFMForecaster._build_ratio_quantile_multi(
+            forecaster,
+            horizon_values,
+            last_close=100.0,
+        )
+
+        expected = float((np.float32(101.0) - np.float32(100.0)) / np.float32(100.0))
+        self.assertIsInstance(forecast.ratio_1d, float)
+        self.assertAlmostEqual(forecast.ratio_1d, expected)
+        self.assertTrue(all(isinstance(v, float) for v in ratio_quantile_multi.values()))
+        self.assertTrue(all(v == expected for v in ratio_quantile_multi.values()))
 
 
 class RendererOutputProtocolTests(unittest.TestCase):

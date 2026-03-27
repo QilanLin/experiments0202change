@@ -218,37 +218,48 @@ class TSFMForecaster:
             prediction_length=prediction_length,
             quantile_levels=quantile_levels,
         )
-        return self._normalize_prediction_frame_dtype(pred_df, quantile_levels)
+        return self._ensure_prediction_frame_numeric(pred_df, quantile_levels)
 
-    def _normalize_prediction_frame_dtype(
+    def _ensure_prediction_frame_numeric(
             self,
             pred_df: pd.DataFrame,
             quantile_levels: List[float],
     ) -> pd.DataFrame:
         """
-        统一 backend 输出后的数值 dtype：在进入 TSFM 派生计算前固定为 float64。
+        确保 backend 输出列是数值型；若 backend 已给出数值 dtype，则保持原 dtype。
         """
         numeric_cols = {"predictions"}
         for q in quantile_levels:
             numeric_cols.update({str(q), f"{q:.2f}", f"{q:.1f}", f"{q}"})
         for col in numeric_cols:
             if col in pred_df.columns:
-                pred_df[col] = pd.to_numeric(pred_df[col], errors="raise").astype(np.float64)
+                if not pd.api.types.is_numeric_dtype(pred_df[col]):
+                    pred_df[col] = pd.to_numeric(pred_df[col], errors="raise")
         return pred_df
 
     def _extract_quantile(self, df: pd.DataFrame, q: float) -> np.ndarray:
         """从预测结果中提取分位数"""
         for key in (q, str(q), f"{q:.2f}", f"{q:.1f}", f"{q}"):
             if key in df.columns:
-                return np.asarray(df[key].values, dtype=np.float64)
+                return np.asarray(df[key].to_numpy(copy=False))
         if q == 0.5 and "predictions" in df.columns:
-            return np.asarray(df["predictions"].values, dtype=np.float64)
+            return np.asarray(df["predictions"].to_numpy(copy=False))
         available_cols = list(df.columns)
         raise KeyError(
             f"Missing quantile column for q={q}. "
             f"Available columns: {available_cols}. "
             f"DataFrame shape: {df.shape}"
         )
+
+    def _cast_scalar_like(self, value: float, values: np.ndarray):
+        """把标量 cast 到预测数组同 dtype，避免派生计算时无谓升精度。"""
+        if not np.issubdtype(values.dtype, np.number):
+            return value
+        return values.dtype.type(value)
+
+    def _compute_ratio_values(self, values: np.ndarray, last_close: float) -> np.ndarray:
+        baseline = self._cast_scalar_like(last_close, values)
+        return (values - baseline) / baseline
 
     def forecast_all_formats(
             self,
@@ -331,7 +342,7 @@ class TSFMForecaster:
                 print(f"[WARNING] 预测结果长度不足30天: {len(median_30d)}")
 
             result.numeric_30d = median_30d.tolist()
-            result.ratio_30d = ((median_30d - last_close) / last_close).tolist()
+            result.ratio_30d = self._compute_ratio_values(median_30d, last_close).tolist()
             # 保持 7dd225a 时代的行为：顶层 ratio_* 直接走 numpy scalar 路径，
             # 避免先转 list 再回填时改变保存到 tsfm_outputs 的数值表示。
             self._assign_ratio_horizons_from_values(result, median_30d, last_close)
@@ -344,7 +355,7 @@ class TSFMForecaster:
             result.ratio_quantile_30d = {}
             for q in self.QUANTILES:
                 q_values = self._extract_quantile(pred_30d, q)
-                result.ratio_quantile_30d[str(q)] = ((q_values - last_close) / last_close).tolist()
+                result.ratio_quantile_30d[str(q)] = self._compute_ratio_values(q_values, last_close).tolist()
 
             result.ratio_quantile_multi = {}
             for q in self.QUANTILES:
@@ -472,16 +483,18 @@ class TSFMForecaster:
         horizon_values: np.ndarray,
         last_close: float,
     ) -> None:
+        baseline = self._cast_scalar_like(last_close, horizon_values)
         for spec in HORIZON_SPECS:
             setattr(
                 forecast,
                 spec.ratio_attr,
-                (horizon_values[spec.days - 1] - last_close) / last_close,
+                float((horizon_values[spec.days - 1] - baseline) / baseline),
             )
 
     def _build_ratio_quantile_multi(self, q_values: np.ndarray, last_close: float) -> Dict[str, float]:
+        baseline = self._cast_scalar_like(last_close, q_values)
         return {
-            spec.key: (q_values[spec.days - 1] - last_close) / last_close
+            spec.key: float((q_values[spec.days - 1] - baseline) / baseline)
             for spec in HORIZON_SPECS
         }
 
