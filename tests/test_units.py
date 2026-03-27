@@ -56,6 +56,8 @@ TradingCalendar = simulator_components_mod.TradingCalendar
 SimulationResult = simulator_models_mod.SimulationResult
 TSFMForecaster = load_module("tsfm_forecaster").TSFMForecaster
 validate_timesfm_quantiles_strict = timesfm_forecaster_mod._validate_requested_quantiles_strict
+pad_array_left_to_multiple = timesfm_forecaster_mod._pad_array_left_to_multiple
+prepare_transformers_context_arrays = timesfm_forecaster_mod._prepare_transformers_context_arrays
 
 
 class AlphaVantageLoaderTests(unittest.TestCase):
@@ -367,6 +369,28 @@ class QuantileDefinitionTests(unittest.TestCase):
         supported = (0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9)
         result = validate_timesfm_quantiles_strict([0.1, 0.5, 0.9], supported)
         self.assertEqual(result, [0.1, 0.5, 0.9])
+
+    def test_timesfm_transformers_context_is_left_padded_to_patch_multiple(self) -> None:
+        arr = np.array([10.0, 11.0, 12.0], dtype=np.float32)
+        padded = pad_array_left_to_multiple(arr, 4)
+        self.assertEqual(padded.tolist(), [10.0, 10.0, 11.0, 12.0])
+
+    def test_timesfm_transformers_context_preparation_clips_then_pads(self) -> None:
+        long_arr = np.arange(1100, dtype=np.float32)
+        short_arr = np.arange(231, dtype=np.float32)
+
+        prepared, forecast_context_len = prepare_transformers_context_arrays(
+            [long_arr, short_arr],
+            max_context_len=1024,
+            patch_length=32,
+        )
+
+        self.assertEqual(len(prepared[0]), 1024)
+        self.assertEqual(len(prepared[1]), 256)
+        self.assertEqual(forecast_context_len, 1024)
+        self.assertTrue(np.array_equal(prepared[0], long_arr[-1024:]))
+        self.assertTrue(np.array_equal(prepared[1][-231:], short_arr))
+        self.assertTrue(np.all(prepared[1][:25] == short_arr[0]))
 
     def test_format4_uses_updated_lower_and_upper_percentile_labels(self) -> None:
         context = RendererContext(

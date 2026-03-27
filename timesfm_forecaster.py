@@ -70,6 +70,24 @@ def _round_up(x: int, base: int) -> int:
     return int(math.ceil(x / base) * base)
 
 
+def _pad_array_left_to_multiple(values: np.ndarray, multiple: int) -> np.ndarray:
+    """
+    Left-pad a 1D array to a multiple of `multiple`.
+    TimesFmModelForPrediction internally reshapes past_values by patch_length,
+    so non-multiple context lengths (for example 231) will crash.
+    """
+    arr = np.asarray(values)
+    if arr.ndim != 1:
+        raise ValueError(f"Expected 1D array, got shape {arr.shape}")
+    if len(arr) == 0:
+        return arr
+    pad = (-len(arr)) % int(multiple)
+    if pad == 0:
+        return arr
+    pad_values = np.full(pad, arr[0], dtype=arr.dtype)
+    return np.concatenate([pad_values, arr])
+
+
 def _validate_requested_quantiles_strict(
     quantile_levels: Sequence[float],
     supported: Sequence[float],
@@ -85,6 +103,29 @@ def _validate_requested_quantiles_strict(
             f"supported={supported_rounded}"
         )
     return requested_rounded
+
+
+def _prepare_transformers_context_arrays(
+    inputs: Sequence[np.ndarray],
+    *,
+    max_context_len: int,
+    patch_length: int,
+) -> tuple[list[np.ndarray], int]:
+    """
+    Clip to max_context_len, then pad each series to a patch-length multiple.
+    Returns the padded arrays plus the max padded context length to feed into
+    TimesFmModelForPrediction(... forecast_context_len=...).
+    """
+    prepared: list[np.ndarray] = []
+    forecast_context_len = 0
+    for ts in inputs:
+        arr = np.asarray(ts, dtype=np.float32)
+        if len(arr) > max_context_len:
+            arr = arr[-max_context_len:]
+        arr = _pad_array_left_to_multiple(arr, patch_length)
+        prepared.append(arr)
+        forecast_context_len = max(forecast_context_len, int(arr.shape[0]))
+    return prepared, forecast_context_len
 
 
 @dataclass
@@ -321,16 +362,22 @@ class TimesFMForecaster:
                 )
 
             device = next(self._model.parameters()).device
+            patch_length = int(getattr(self._model.config, "patch_length", 32))
+            prepared_arrays, forecast_context_len = _prepare_transformers_context_arrays(
+                inputs_list,
+                max_context_len=max_context_len,
+                patch_length=patch_length,
+            )
             past_values = [
                 torch.tensor(ts, dtype=torch.float32, device=device)
-                for ts in inputs_list
+                for ts in prepared_arrays
             ]
             freq = torch.zeros(len(inputs_list), dtype=torch.long, device=device)
             with torch.no_grad():
                 outputs = self._model(
                     past_values=past_values,
                     freq=freq,
-                    forecast_context_len=min(max_context_len, max(len(ts) for ts in inputs_list)),
+                    forecast_context_len=forecast_context_len,
                 )
             point_forecast = outputs.mean_predictions.detach().cpu().numpy()[:, :prediction_length]
             quantile_forecast = outputs.full_predictions.detach().cpu().numpy()[:, :prediction_length, :]
