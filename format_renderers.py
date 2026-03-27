@@ -4,6 +4,34 @@ from abc import ABC, abstractmethod
 from typing import Any, Callable, Dict
 
 
+def _normalize_quantile_key(q: float) -> str:
+    return f"{float(q):g}"
+
+
+def _anchor_quantile_keys(context: "RendererContext") -> tuple[str, str, str]:
+    quantiles = sorted(float(q) for q in context.quantile_keys())
+    lower_q = quantiles[0]
+    upper_q = quantiles[-1]
+    median_q = min(quantiles, key=lambda q: abs(q - 0.5))
+    return (
+        _normalize_quantile_key(lower_q),
+        _normalize_quantile_key(median_q),
+        _normalize_quantile_key(upper_q),
+    )
+
+
+def _to_percent(q_key: str) -> int:
+    return int(round(float(q_key) * 100))
+
+
+def _ordinal(n: int) -> str:
+    if 10 <= n % 100 <= 20:
+        suffix = "th"
+    else:
+        suffix = {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th")
+    return f"{n}{suffix}"
+
+
 class RendererContext:
     """渲染 prompt 时需要共享的小型上下文。"""
 
@@ -76,14 +104,18 @@ class Format4Renderer(BaseFormatRenderer):
     def render(self, forecast: Any, context: RendererContext) -> str:
         # 格式4：数字，分位数，30天
         ticker = forecast.ticker
-        expl_05, expl_50, expl_95 = context.quantile_explanations()
-        q50 = forecast.numeric_quantile_30d["0.5"]
-        q05 = forecast.numeric_quantile_30d["0.05"]
-        q95 = forecast.numeric_quantile_30d["0.95"]
+        lower_key, median_key, upper_key = _anchor_quantile_keys(context)
+        expl_lower, expl_median, expl_upper = context.quantile_explanations()
+        median_pct = _to_percent(median_key)
+        lower_pct = _to_percent(lower_key)
+        upper_pct = _to_percent(upper_key)
+        q50 = forecast.numeric_quantile_30d[median_key]
+        q05 = forecast.numeric_quantile_30d[lower_key]
+        q95 = forecast.numeric_quantile_30d[upper_key]
         return f"TSFM Forecast for {ticker} (30-day quantile prices):\n" \
-               f"Median (50%): Day30=${q50[-1]:.6f} {expl_50}\n" \
-               f"5th percentile: Day30=${q05[-1]:.6f} {expl_05}\n" \
-               f"95th percentile: Day30=${q95[-1]:.6f} {expl_95}"
+               f"Median ({median_pct}%): Day30=${q50[-1]:.6f} {expl_median}\n" \
+               f"{_ordinal(lower_pct)} percentile: Day30=${q05[-1]:.6f} {expl_lower}\n" \
+               f"{_ordinal(upper_pct)} percentile: Day30=${q95[-1]:.6f} {expl_upper}"
 
 
 class Format5Renderer(BaseFormatRenderer):
@@ -92,17 +124,18 @@ class Format5Renderer(BaseFormatRenderer):
     def render(self, forecast: Any, context: RendererContext) -> str:
         # 格式5：比例，分位数，30天
         ticker = forecast.ticker
-        expl_05, expl_50, expl_95 = context.quantile_explanations()
+        lower_key, median_key, upper_key = _anchor_quantile_keys(context)
+        expl_lower, expl_median, expl_upper = context.quantile_explanations()
         lines = [f"TSFM Forecast for {ticker} (30-day quantile returns):"]
         for q in context.quantile_keys():
             r = forecast.ratio_quantile_30d[q][-1]
             note = ""
-            if q == "0.05":
-                note = f" {expl_05}"
-            if q == "0.5":
-                note = f" {expl_50}"
-            if q == "0.95":
-                note = f" {expl_95}"
+            if q == lower_key:
+                note = f" {expl_lower}"
+            if q == median_key:
+                note = f" {expl_median}"
+            if q == upper_key:
+                note = f" {expl_upper}"
             lines.append(f"  {q} quantile: {r * 100:.6f}%{note}")
         return "\n".join(lines)
 
@@ -113,7 +146,11 @@ class Format6Renderer(BaseFormatRenderer):
     def render(self, forecast: Any, context: RendererContext) -> str:
         # 格式6：比例，分位数，多时间窗口
         ticker = forecast.ticker
-        expl_05, expl_50, expl_95 = context.quantile_explanations()
+        lower_key, median_key, upper_key = _anchor_quantile_keys(context)
+        expl_lower, expl_median, expl_upper = context.quantile_explanations()
+        lower_pct = _to_percent(lower_key)
+        median_pct = _to_percent(median_key)
+        upper_pct = _to_percent(upper_key)
         if forecast.ratio_quantile_multi is None:
             return f"TSFM Forecast for {ticker} (quantile returns by horizon):\n" \
                    f"Status: {forecast.status}\n" \
@@ -121,11 +158,14 @@ class Format6Renderer(BaseFormatRenderer):
         lines = [f"TSFM Forecast for {ticker} (quantile returns by horizon):"]
         for spec in context.horizon_specs:
             horizon = spec.key
-            q05 = forecast.ratio_quantile_multi["0.05"][horizon]
-            q50 = forecast.ratio_quantile_multi["0.5"][horizon]
-            q95 = forecast.ratio_quantile_multi["0.95"][horizon]
+            q05 = forecast.ratio_quantile_multi[lower_key][horizon]
+            q50 = forecast.ratio_quantile_multi[median_key][horizon]
+            q95 = forecast.ratio_quantile_multi[upper_key][horizon]
             lines.append(
-                f"  {horizon}: [{q05 * 100:.1f}% {expl_05}, {q50 * 100:.1f}% {expl_50}, {q95 * 100:.1f}% {expl_95}]"
+                f"  {horizon}: "
+                f"[{_ordinal(lower_pct)}={q05 * 100:.1f}% {expl_lower}, "
+                f"{median_pct}%={q50 * 100:.1f}% {expl_median}, "
+                f"{_ordinal(upper_pct)}={q95 * 100:.1f}% {expl_upper}]"
             )
         return "\n".join(lines)
 

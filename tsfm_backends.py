@@ -134,7 +134,7 @@ class TimesFMBackend(BaseTSFMBackend):
         prediction_length: int,
         quantile_levels: List[float],
     ) -> pd.DataFrame:
-        # TimeFM wrapper 内部已处理 quantile 映射逻辑，这里只保留统一接口转发。
+        # TimeFM wrapper 内部使用严格 quantile 校验：不支持的 quantile 会直接报错。
         pipeline = self.load_pipeline()
         return pipeline.predict_df(
             context_df,

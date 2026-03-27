@@ -70,12 +70,21 @@ def _round_up(x: int, base: int) -> int:
     return int(math.ceil(x / base) * base)
 
 
-def _nearest_supported_quantile(
-    quantile: float, supported: Sequence[float]
-) -> float:
-    """Map unsupported quantiles to the closest quantile exposed by TimesFM."""
-    q = round(float(quantile), 2)
-    return min((float(s) for s in supported), key=lambda s: abs(s - q))
+def _validate_requested_quantiles_strict(
+    quantile_levels: Sequence[float],
+    supported: Sequence[float],
+) -> list[float]:
+    """Strictly validate that all requested quantiles are supported by TimesFM."""
+    supported_rounded = [round(float(s), 2) for s in supported]
+    requested_rounded = [round(float(q), 2) for q in quantile_levels]
+    unsupported = sorted({q for q in requested_rounded if q not in supported_rounded})
+    if unsupported:
+        raise ValueError(
+            "TimesFM strict quantile mode rejected unsupported quantiles. "
+            f"requested={requested_rounded}, unsupported={unsupported}, "
+            f"supported={supported_rounded}"
+        )
+    return requested_rounded
 
 
 @dataclass
@@ -120,8 +129,8 @@ class TimesFMForecaster:
         # google/timesfm-2.5-200m-pytorch checkpoint cleanly in this setup.
         self._legacy_api = hasattr(timesfm, "TimesFM_2p5_200M_torch")
         self._use_transformers_model = TimesFmModelForPrediction is not None and not self._legacy_api
-        # TimesFM checkpoints expose 0.1..0.9 quantiles; we map requested
-        # quantiles to the nearest supported value when needed.
+        # TimesFM checkpoints expose a fixed quantile set (typically 0.1..0.9).
+        # Keep strict semantics: unsupported requests should fail fast.
         self._supported_quantiles = tuple(round(i / 10, 1) for i in range(1, 10))
 
     def _patch_timesfm_torch_loader(self):
@@ -258,12 +267,13 @@ class TimesFMForecaster:
         if quantile_levels is None:
             quantile_levels = [0.1, 0.5, 0.9]
 
-        # TimesFM checkpoints expose 0.1..0.9 quantiles. For code paths that
-        # ask for 0.05 / 0.95 etc, map to the nearest supported quantile so the
-        # rest of the pipeline can proceed.
-        quantile_map = {
-            round(float(q), 2): _nearest_supported_quantile(q, self._supported_quantiles)
-            for q in quantile_levels
+        requested_quantiles = _validate_requested_quantiles_strict(
+            quantile_levels,
+            self._supported_quantiles,
+        )
+        supported_index = {
+            round(float(supported_q), 2): idx
+            for idx, supported_q in enumerate(self._supported_quantiles)
         }
 
         # 兼容单序列：如果没有 id_column，就当作一个 id=0
@@ -350,10 +360,8 @@ class TimesFMForecaster:
                 }
             )
 
-            for q in quantile_levels:
-                q_ = round(float(q), 2)
-                supported_q = quantile_map[q_]
-                q_idx = 1 + self._supported_quantiles.index(supported_q)
+            for q_ in requested_quantiles:
+                q_idx = 1 + supported_index[q_]
                 pred[f"{q_:.1f}"] = quantile_forecast[i, :, q_idx]
 
             out_frames.append(pred)

@@ -36,8 +36,8 @@ HORIZON_SPECS: tuple[HorizonSpec, ...] = (
     HorizonSpec(key="4w", days=20, label="4 Weeks", ratio_attr="ratio_4w"),
 )
 
-# 共享的分位数定义
-TSFM_QUANTILES: tuple[float, ...] = (0.05, 0.25, 0.5, 0.75, 0.95)
+# 共享的分位数定义（与当前 TimesFM 实际使用值保持一致）
+TSFM_QUANTILES: tuple[float, ...] = (0.1, 0.2, 0.5, 0.7, 0.9)
 
 FORMAT_SPECS: tuple[FormatSpec, ...] = (
     # Baseline：LLM Only
@@ -88,7 +88,7 @@ FORMAT_SPECS: tuple[FormatSpec, ...] = (
         config_key="format_4",
         config_value="numeric_quantile_30d",
         display_name="TSFM Format 4 (Numeric Quantile 30d)",
-        description="Day-30 price quantiles",
+        description="Day-30 price quantiles at 10%, 50%, 90%",
     ),
     # 格式5：比例，分位数，30天
     FormatSpec(
@@ -98,7 +98,7 @@ FORMAT_SPECS: tuple[FormatSpec, ...] = (
         config_key="format_5",
         config_value="ratio_quantile_30d",
         display_name="TSFM Format 5 (Ratio Quantile 30d)",
-        description="Day-30 return quantiles",
+        description="Day-30 return quantiles at 10%, 20%, 50%, 70%, 90%",
     ),
     # 格式6：比例，分位数，多时间窗口
     FormatSpec(
@@ -108,7 +108,7 @@ FORMAT_SPECS: tuple[FormatSpec, ...] = (
         config_key="format_6",
         config_value="ratio_quantile_multi",
         display_name="TSFM Format 6 (Ratio Quantile Multi-Horizon)",
-        description="Multi-horizon return quantiles",
+        description="Multi-horizon return quantiles at 10%, 50%, 90%",
     ),
     # 格式7a：比例，多时间窗口 + 过去7个已兑现1D预测的逐条MSE值
     FormatSpec(

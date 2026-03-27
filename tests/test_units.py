@@ -22,17 +22,26 @@ data_repositories_mod = load_module("data_repositories")
 artifact_store_mod = load_module("artifact_store")
 daily_decision_pipeline_mod = load_module("daily_decision_pipeline")
 decision_parser_mod = load_module("decision_parser")
+format_registry_mod = load_module("format_registry")
+format_renderers_mod = load_module("format_renderers")
 historical_reliability_mod = load_module("historical_reliability")
 market_context_mod = load_module("market_context")
 portfolio_models_mod = load_module("portfolio_models")
 simulator_components_mod = load_module("simulator_components")
 simulator_models_mod = load_module("simulator_models")
+timesfm_forecaster_mod = load_module("timesfm_forecaster")
 
 AlphaVantageLoader = data_loader_mod.AlphaVantageLoader
 PriceRepository = data_repositories_mod.PriceRepository
 ArtifactStore = artifact_store_mod.ArtifactStore
 DailyDecisionPipeline = daily_decision_pipeline_mod.DailyDecisionPipeline
 DecisionParser = decision_parser_mod.DecisionParser
+TSFM_QUANTILES = format_registry_mod.TSFM_QUANTILES
+HORIZON_SPECS = format_registry_mod.HORIZON_SPECS
+RendererContext = format_renderers_mod.RendererContext
+Format4Renderer = format_renderers_mod.Format4Renderer
+Format5Renderer = format_renderers_mod.Format5Renderer
+Format6Renderer = format_renderers_mod.Format6Renderer
 HistoricalReliabilityCalculator = historical_reliability_mod.HistoricalReliabilityCalculator
 DailyMarketContext = market_context_mod.DailyMarketContext
 MarketContextProvider = market_context_mod.MarketContextProvider
@@ -40,6 +49,7 @@ PortfolioDecision = portfolio_models_mod.PortfolioDecision
 PortfolioState = portfolio_models_mod.PortfolioState
 TradingCalendar = simulator_components_mod.TradingCalendar
 SimulationResult = simulator_models_mod.SimulationResult
+validate_timesfm_quantiles_strict = timesfm_forecaster_mod._validate_requested_quantiles_strict
 
 
 class AlphaVantageLoaderTests(unittest.TestCase):
@@ -261,6 +271,89 @@ class DecisionParserTests(unittest.TestCase):
         self.assertIn("Failed to parse JSON", decision.reasoning)
         self.assertAlmostEqual(sum(decision.weights.values()), 1.0)
         self.assertAlmostEqual(decision.weights["CASH"], 0.0)
+
+
+class QuantileDefinitionTests(unittest.TestCase):
+    def test_registry_quantiles_match_timesfm_effective_values(self) -> None:
+        self.assertEqual(TSFM_QUANTILES, (0.1, 0.2, 0.5, 0.7, 0.9))
+
+    def test_timesfm_strict_quantile_validation_rejects_unsupported_levels(self) -> None:
+        supported = (0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9)
+        with self.assertRaises(ValueError) as ctx:
+            validate_timesfm_quantiles_strict([0.05, 0.5, 0.95], supported)
+        message = str(ctx.exception)
+        self.assertIn("unsupported", message)
+        self.assertIn("0.05", message)
+        self.assertIn("0.95", message)
+
+    def test_timesfm_strict_quantile_validation_accepts_supported_levels(self) -> None:
+        supported = (0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9)
+        result = validate_timesfm_quantiles_strict([0.1, 0.5, 0.9], supported)
+        self.assertEqual(result, [0.1, 0.5, 0.9])
+
+    def test_format4_uses_updated_lower_and_upper_percentile_labels(self) -> None:
+        context = RendererContext(
+            horizon_specs=HORIZON_SPECS,
+            quantiles=list(TSFM_QUANTILES),
+            quantile_keys=lambda: [str(q) for q in TSFM_QUANTILES],
+            quantile_explanations=lambda: ("(lower)", "(median)", "(upper)"),
+        )
+        forecast = SimpleNamespace(
+            ticker="AAPL",
+            numeric_quantile_30d={
+                "0.1": [101.0],
+                "0.2": [102.0],
+                "0.5": [105.0],
+                "0.7": [107.0],
+                "0.9": [109.0],
+            },
+        )
+
+        rendered = Format4Renderer().render(forecast, context)
+
+        self.assertIn("Median (50%)", rendered)
+        self.assertIn("10th percentile", rendered)
+        self.assertIn("90th percentile", rendered)
+        self.assertNotIn("5th percentile", rendered)
+        self.assertNotIn("95th percentile", rendered)
+
+    def test_format5_and_format6_use_updated_quantile_keys(self) -> None:
+        context = RendererContext(
+            horizon_specs=HORIZON_SPECS,
+            quantiles=list(TSFM_QUANTILES),
+            quantile_keys=lambda: [str(q) for q in TSFM_QUANTILES],
+            quantile_explanations=lambda: ("(lower)", "(median)", "(upper)"),
+        )
+        ratio_quantile_30d = {
+            "0.1": [0.01],
+            "0.2": [0.02],
+            "0.5": [0.05],
+            "0.7": [0.07],
+            "0.9": [0.09],
+        }
+        ratio_quantile_multi = {
+            "0.1": {spec.key: 0.01 for spec in HORIZON_SPECS},
+            "0.2": {spec.key: 0.02 for spec in HORIZON_SPECS},
+            "0.5": {spec.key: 0.05 for spec in HORIZON_SPECS},
+            "0.7": {spec.key: 0.07 for spec in HORIZON_SPECS},
+            "0.9": {spec.key: 0.09 for spec in HORIZON_SPECS},
+        }
+        forecast = SimpleNamespace(
+            ticker="AAPL",
+            ratio_quantile_30d=ratio_quantile_30d,
+            ratio_quantile_multi=ratio_quantile_multi,
+            status="success",
+            error=None,
+        )
+
+        rendered_5 = Format5Renderer().render(forecast, context)
+        rendered_6 = Format6Renderer().render(forecast, context)
+
+        self.assertIn("0.7 quantile", rendered_5)
+        self.assertNotIn("0.75 quantile", rendered_5)
+        self.assertIn("10th=", rendered_6)
+        self.assertIn("90th=", rendered_6)
+        self.assertNotIn("95th", rendered_6)
 
 
 class HistoricalReliabilityCalculatorTests(unittest.TestCase):

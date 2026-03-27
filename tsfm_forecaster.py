@@ -5,7 +5,7 @@ TSFM Forecaster - Chronos-2 多格式预测模块
 1. 数字，接下来30天
 2. 比例，接下来30天
 3. 比例，1天/1周/2周/3周/4周
-4. 数字，分位数 {0.05, 0.25, 0.5, 0.75, 0.95}，30天
+4. 数字，分位数 {0.1, 0.2, 0.5, 0.7, 0.9}，30天
 5. 比例，分位数，30天
 6. 比例，分位数，多时间窗口
 7a. 比例，多时间窗口 + 过去7个已兑现1D预测MSE
@@ -417,10 +417,30 @@ class TSFMForecaster:
         }
 
     def _get_quantile_explanations(self) -> tuple[str, str, str]:
-        expl_05 = "(0.05 indicates a 5%  probability of being less than this value)"
-        expl_50 = "(0.5  indicates a 50% probability of being less than this value)"
-        expl_95 = "(0.95 indicates a 95% probability of being less than this value)"
-        return expl_05, expl_50, expl_95
+        quantiles = sorted(float(q) for q in self.QUANTILES)
+        lower_q = quantiles[0]
+        upper_q = quantiles[-1]
+        median_q = min(quantiles, key=lambda q: abs(q - 0.5))
+
+        def _fmt(q: float) -> str:
+            return f"{q:g}"
+
+        def _pct(q: float) -> str:
+            return f"{q * 100:.0f}"
+
+        expl_lower = (
+            f"({_fmt(lower_q)} indicates a {_pct(lower_q)}% probability "
+            "of being less than this value)"
+        )
+        expl_median = (
+            f"({_fmt(median_q)} indicates a {_pct(median_q)}% probability "
+            "of being less than this value)"
+        )
+        expl_upper = (
+            f"({_fmt(upper_q)} indicates a {_pct(upper_q)}% probability "
+            "of being less than this value)"
+        )
+        return expl_lower, expl_median, expl_upper
 
     def _quantile_keys(self) -> list[str]:
         return [str(q) for q in self.QUANTILES]
