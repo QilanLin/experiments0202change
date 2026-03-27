@@ -43,6 +43,10 @@ RendererContext = format_renderers_mod.RendererContext
 Format4Renderer = format_renderers_mod.Format4Renderer
 Format5Renderer = format_renderers_mod.Format5Renderer
 Format6Renderer = format_renderers_mod.Format6Renderer
+Format2Renderer = format_renderers_mod.Format2Renderer
+Format3Renderer = format_renderers_mod.Format3Renderer
+Format7ARenderer = format_renderers_mod.Format7ARenderer
+Format7BRenderer = format_renderers_mod.Format7BRenderer
 HistoricalReliabilityCalculator = historical_reliability_mod.HistoricalReliabilityCalculator
 DailyMarketContext = market_context_mod.DailyMarketContext
 MarketContextProvider = market_context_mod.MarketContextProvider
@@ -403,6 +407,147 @@ class TSFMDtypeProtocolTests(unittest.TestCase):
         q_values = TSFMForecaster._extract_quantile(forecaster, pred_df, 0.5)
 
         self.assertEqual(q_values.dtype, np.float64)
+
+
+class RendererOutputProtocolTests(unittest.TestCase):
+    def _context(self) -> RendererContext:
+        return RendererContext(
+            horizon_specs=HORIZON_SPECS,
+            quantiles=list(TSFM_QUANTILES),
+            quantile_keys=lambda: [str(q) for q in TSFM_QUANTILES],
+            quantile_explanations=lambda: ("(lower)", "(median)", "(upper)"),
+        )
+
+    def test_format2_output_string_is_exact(self) -> None:
+        forecast = SimpleNamespace(
+            ticker="AAPL",
+            ratio_30d=[0.01] * 25 + [0.02] * 5,
+        )
+        rendered = Format2Renderer().render(forecast, self._context())
+        expected = (
+            "TSFM Forecast for AAPL (30-day return prediction):\n"
+            "Day 1-5: ['1.000000%', '1.000000%', '1.000000%', '1.000000%', '1.000000%']\n"
+            "Day 26-30: ['2.000000%', '2.000000%', '2.000000%', '2.000000%', '2.000000%']"
+        )
+        self.assertEqual(rendered, expected)
+
+    def test_format3_output_string_is_exact(self) -> None:
+        forecast = SimpleNamespace(
+            ticker="AAPL",
+            ratio_1d=0.001,
+            ratio_1w=0.01234,
+            ratio_2w=-0.02,
+            ratio_3w=0.0,
+            ratio_4w=0.1234567,
+        )
+        rendered = Format3Renderer().render(forecast, self._context())
+        expected = "\n".join(
+            [
+                "TSFM Forecast for AAPL (multi-horizon returns):",
+                "1 Day: 0.100000%",
+                "1 Week: 1.234000%",
+                "2 Weeks: -2.000000%",
+                "3 Weeks: 0.000000%",
+                "4 Weeks: 12.345670%",
+            ]
+        )
+        self.assertEqual(rendered, expected)
+
+    def test_format7a_output_string_is_exact(self) -> None:
+        forecast = SimpleNamespace(
+            ticker="AAPL",
+            forecast_date="2025-02-01",
+            ratio_1d=0.001,
+            ratio_1w=0.01234,
+            ratio_2w=-0.02,
+            ratio_3w=0.0,
+            ratio_4w=0.1234567,
+            historical_reliability={
+                "past_7_resolved_1d": {
+                    "n": 2,
+                    "window_size": 7,
+                    "samples": [
+                        {
+                            "forecast_origin_date": "2025-01-28",
+                            "resolved_target_date": "2025-01-29",
+                            "squared_error": 0.00012345,
+                        },
+                        {
+                            "forecast_origin_date": "2025-01-29",
+                            "resolved_target_date": "2025-01-30",
+                            "squared_error": 0.00034567,
+                        },
+                    ],
+                }
+            },
+        )
+        rendered = Format7ARenderer().render(forecast, self._context())
+        expected = "\n".join(
+            [
+                "TSFM Forecast for AAPL (multi-horizon returns):",
+                "1 Day: 0.100000%",
+                "1 Week: 1.234000%",
+                "2 Weeks: -2.000000%",
+                "3 Weeks: 0.000000%",
+                "4 Weeks: 12.345670%",
+                "",
+                "TSFM Historical Reliability for AAPL (computed from the last 7 resolved 1D forecasts before 2025-02-01):",
+                "Past 7 resolved 1D forecast MSE values (oldest to newest):",
+                "  2025-01-28 -> 2025-01-29: 1.2345 bp^2",
+                "  2025-01-29 -> 2025-01-30: 3.4567 bp^2",
+                "Sample Count: 2/7",
+            ]
+        )
+        self.assertEqual(rendered, expected)
+
+    def test_format7b_output_string_is_exact(self) -> None:
+        forecast = SimpleNamespace(
+            ticker="AAPL",
+            forecast_date="2025-02-01",
+            ratio_1d=0.001,
+            ratio_1w=0.01234,
+            ratio_2w=-0.02,
+            ratio_3w=0.0,
+            ratio_4w=0.1234567,
+            historical_reliability={
+                "past_7_resolved_1d": {
+                    "n": 2,
+                    "window_size": 7,
+                    "normalized_reliability_score": 0.87654,
+                    "samples": [
+                        {
+                            "forecast_origin_date": "2025-01-28",
+                            "resolved_target_date": "2025-01-29",
+                            "squared_error": 0.00012345,
+                        },
+                        {
+                            "forecast_origin_date": "2025-01-29",
+                            "resolved_target_date": "2025-01-30",
+                            "squared_error": 0.00034567,
+                        },
+                    ],
+                }
+            },
+        )
+        rendered = Format7BRenderer().render(forecast, self._context())
+        expected = "\n".join(
+            [
+                "TSFM Forecast for AAPL (multi-horizon returns):",
+                "1 Day: 0.100000%",
+                "1 Week: 1.234000%",
+                "2 Weeks: -2.000000%",
+                "3 Weeks: 0.000000%",
+                "4 Weeks: 12.345670%",
+                "",
+                "TSFM Historical Reliability for AAPL (computed from the last 7 resolved 1D forecasts before 2025-02-01):",
+                "Past 7 resolved 1D forecast MSE values (oldest to newest):",
+                "  2025-01-28 -> 2025-01-29: 1.2345 bp^2",
+                "  2025-01-29 -> 2025-01-30: 3.4567 bp^2",
+                "Normalized Reliability Score: 0.877",
+                "Sample Count: 2/7",
+            ]
+        )
+        self.assertEqual(rendered, expected)
 
 
 class HistoricalReliabilityCalculatorTests(unittest.TestCase):
