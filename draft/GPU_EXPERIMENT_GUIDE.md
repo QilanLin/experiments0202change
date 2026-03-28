@@ -75,6 +75,10 @@ bash run_server_experiment.sh \
   --end-date 2025-09-30
 ```
 
+常用命令模板见：
+
+- `SERVER_COMMAND_TEMPLATES.md`
+
 ### 4.1 快速测试（验证环境）
 ```bash
 # 先用mock模式测试流程
