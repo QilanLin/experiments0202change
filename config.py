@@ -30,6 +30,13 @@ def _read_optional_positive_int_env(name: str, default: int | None) -> int | Non
     return None if value <= 0 else value
 
 
+def _read_float_env(name: str, default: float) -> float:
+    raw = os.getenv(name)
+    if raw is None or raw == "":
+        return default
+    return float(raw)
+
+
 EXPERIMENT_CONFIG = {
     # 基本设置
     "initial_capital": 1_000_000,  # 本金 1M
@@ -40,6 +47,7 @@ EXPERIMENT_CONFIG = {
     "debug_llm": os.getenv("QWEN_DEBUG_MODEL", "Qwen/Qwen3-4B-Instruct-2507"),
     "production_llm": os.getenv("QWEN_PRODUCTION_MODEL", "Qwen/Qwen3-30B-A3B-Instruct-2507"),
     "llm_provider": "qwen",
+    "llm_temperature": _read_float_env("LLM_TEMPERATURE", 0.0),
     "llm_max_new_tokens": _read_optional_positive_int_env("LLM_MAX_NEW_TOKENS", 10240),
     "lmstudio_base_url": os.getenv("LM_STUDIO_BASE_URL", "http://127.0.0.1:1234/v1"),
     "lmstudio_api_key": os.getenv("LM_STUDIO_API_KEY"),

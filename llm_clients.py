@@ -78,8 +78,8 @@ class QwenLLMClient(BaseLLMClient):
     def __init__(
         self,
         model_name: str,
-        temperature: float = 0.0,
-        max_new_tokens: int = 1024,
+        temperature: float,
+        max_new_tokens: int,
         input_token_budget: int | None = None,
     ):
         self._client = LocalQwenChat(
@@ -105,9 +105,9 @@ class LMStudioLLMClient(BaseLLMClient):
         self,
         model_name: str,
         base_url: str,
+        temperature: float,
+        max_new_tokens: int,
         api_key: str | None = None,
-        temperature: float = 0.0,
-        max_new_tokens: int = 1024,
         input_token_budget: int | None = None,
     ):
         self._client = LMStudioOpenAIChat(
@@ -126,6 +126,19 @@ class LMStudioLLMClient(BaseLLMClient):
         return _approximate_input_tokens(messages)
 
 
+def _resolve_llm_runtime_settings() -> tuple[float, int, int | None]:
+    temperature = float(EXPERIMENT_CONFIG.get("llm_temperature", 0.0))
+    max_new_tokens = int(EXPERIMENT_CONFIG.get("llm_max_new_tokens") or 1024)
+    input_token_budget = EXPERIMENT_CONFIG.get("llm_input_token_budget")
+    if max_new_tokens <= 0:
+        raise ValueError(f"Invalid llm_max_new_tokens={max_new_tokens}, expected > 0")
+    if input_token_budget is not None and int(input_token_budget) <= 0:
+        raise ValueError(
+            f"Invalid llm_input_token_budget={input_token_budget}, expected > 0 or None"
+        )
+    return temperature, max_new_tokens, input_token_budget
+
+
 def build_llm_client(debug: bool, use_mock_llm: bool = False) -> BaseLLMClient:
     """根据配置构建统一的 LLM 客户端。"""
     llm_model = (
@@ -134,24 +147,37 @@ def build_llm_client(debug: bool, use_mock_llm: bool = False) -> BaseLLMClient:
         else EXPERIMENT_CONFIG["production_llm"]
     )
     llm_provider = EXPERIMENT_CONFIG.get("llm_provider", "qwen")
+    temperature, max_new_tokens, input_token_budget = _resolve_llm_runtime_settings()
 
     if use_mock_llm:
         print("Using MockLLM for debugging...")
         return MockLLMClient(model_name="mock")
 
+    print(
+        "[LLM] provider={provider} model={model} temp={temp} max_new_tokens={max_new} "
+        "input_token_budget={budget}".format(
+            provider=llm_provider,
+            model=llm_model,
+            temp=temperature,
+            max_new=max_new_tokens,
+            budget=input_token_budget,
+        ),
+        flush=True,
+    )
+
     if llm_provider == "qwen":
         return QwenLLMClient(
             model_name=llm_model,
-            temperature=0.0,
-            max_new_tokens=int(EXPERIMENT_CONFIG.get("llm_max_new_tokens") or 1024),
-            input_token_budget=EXPERIMENT_CONFIG.get("llm_input_token_budget"),
+            temperature=temperature,
+            max_new_tokens=max_new_tokens,
+            input_token_budget=input_token_budget,
         )
 
     return LMStudioLLMClient(
         model_name=llm_model,
         base_url=EXPERIMENT_CONFIG["lmstudio_base_url"],
         api_key=EXPERIMENT_CONFIG.get("lmstudio_api_key"),
-        temperature=0.0,
-        max_new_tokens=int(EXPERIMENT_CONFIG.get("llm_max_new_tokens") or 1024),
-        input_token_budget=EXPERIMENT_CONFIG.get("llm_input_token_budget"),
+        temperature=temperature,
+        max_new_tokens=max_new_tokens,
+        input_token_budget=input_token_budget,
     )
