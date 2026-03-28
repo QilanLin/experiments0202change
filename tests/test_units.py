@@ -1214,6 +1214,38 @@ class LLMProviderConfigTests(unittest.TestCase):
         finally:
             llm_clients_mod.EXPERIMENT_CONFIG["llm_provider"] = original_provider
 
+    def test_build_llm_client_uses_zhipu_specific_model_and_base_url(self) -> None:
+        original_provider = llm_clients_mod.EXPERIMENT_CONFIG.get("llm_provider")
+        original_debug_model = llm_clients_mod.EXPERIMENT_CONFIG.get("zhipu_debug_llm")
+        original_base_url = llm_clients_mod.EXPERIMENT_CONFIG.get("zhipu_base_url")
+        original_api_key = llm_clients_mod.EXPERIMENT_CONFIG.get("zhipu_api_key")
+        original_cls = llm_clients_mod.ZhipuLLMClient
+
+        created: dict[str, object] = {}
+
+        class FakeZhipuClient:
+            def __init__(self, **kwargs):
+                created.update(kwargs)
+
+        try:
+            llm_clients_mod.EXPERIMENT_CONFIG["llm_provider"] = "zhipu"
+            llm_clients_mod.EXPERIMENT_CONFIG["zhipu_debug_llm"] = "glm-5-turbo"
+            llm_clients_mod.EXPERIMENT_CONFIG["zhipu_base_url"] = "https://open.bigmodel.cn/api/coding/paas/v4"
+            llm_clients_mod.EXPERIMENT_CONFIG["zhipu_api_key"] = "k"
+            llm_clients_mod.ZhipuLLMClient = FakeZhipuClient
+
+            build_llm_client(debug=True, use_mock_llm=False)
+
+            self.assertEqual(created["model_name"], "glm-5-turbo")
+            self.assertEqual(created["base_url"], "https://open.bigmodel.cn/api/coding/paas/v4")
+            self.assertEqual(created["api_key"], "k")
+        finally:
+            llm_clients_mod.ZhipuLLMClient = original_cls
+            llm_clients_mod.EXPERIMENT_CONFIG["llm_provider"] = original_provider
+            llm_clients_mod.EXPERIMENT_CONFIG["zhipu_debug_llm"] = original_debug_model
+            llm_clients_mod.EXPERIMENT_CONFIG["zhipu_base_url"] = original_base_url
+            llm_clients_mod.EXPERIMENT_CONFIG["zhipu_api_key"] = original_api_key
+
 
 if __name__ == "__main__":
     unittest.main()

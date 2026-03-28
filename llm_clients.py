@@ -4,18 +4,23 @@ import json
 import math
 import random
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from typing import Any
 
 try:
     from transformers import AutoTokenizer
 except Exception:  # pragma: no cover - optional dependency fallback
     AutoTokenizer = None  # type: ignore
+try:
+    from zai import ZhipuAiClient
+except Exception:  # pragma: no cover - optional dependency fallback
+    ZhipuAiClient = None  # type: ignore
 
 from .config import ASSET_TICKERS, EXPERIMENT_CONFIG
 from .lmstudio_openai_chat import LMStudioOpenAIChat
 from tradingagents_tsfm_modified_v5.tradingagents.llms.local_qwen import LocalQwenChat
 
-SUPPORTED_LLM_PROVIDERS = ("qwen", "lmstudio")
+SUPPORTED_LLM_PROVIDERS = ("qwen", "lmstudio", "zhipu")
 
 
 class BaseLLMClient(ABC):
@@ -201,6 +206,57 @@ class LMStudioLLMClient(BaseLLMClient):
         return _approximate_input_tokens(messages)
 
 
+@dataclass
+class _SimpleContentResponse:
+    content: str
+
+
+class ZhipuLLMClient(BaseLLMClient):
+    """智谱 Z.ai Python SDK 客户端适配器。"""
+
+    def __init__(
+        self,
+        model_name: str,
+        temperature: float,
+        max_new_tokens: int,
+        api_key: str | None = None,
+        base_url: str | None = None,
+        input_token_budget: int | None = None,
+    ) -> None:
+        if ZhipuAiClient is None:
+            raise ImportError(
+                "zai-sdk is required for llm_provider='zhipu'. "
+                "Install with: pip install zai-sdk"
+            )
+        if not api_key:
+            raise ValueError(
+                "Missing Zhipu API key. Set env `ZAI_API_KEY` (or `ZHIPU_API_KEY`)."
+            )
+        self.model_name = model_name
+        self.temperature = temperature
+        self.max_new_tokens = max_new_tokens
+        self.input_token_budget = input_token_budget
+        client_kwargs: dict[str, Any] = {"api_key": api_key}
+        if base_url:
+            client_kwargs["base_url"] = base_url.rstrip("/") + "/"
+        self._client = ZhipuAiClient(**client_kwargs)
+
+    def invoke(self, messages: Any) -> Any:
+        normalized = _normalize_messages_for_token_count(messages)
+        if not isinstance(normalized, list):
+            normalized = [{"role": "user", "content": str(normalized)}]
+        response = self._client.chat.completions.create(
+            model=self.model_name,
+            messages=normalized,
+            temperature=self.temperature,
+            max_tokens=self.max_new_tokens,
+        )
+        return _SimpleContentResponse(content=response.choices[0].message.content)
+
+    def _estimate_input_tokens(self, messages: Any) -> tuple[int | None, str]:
+        return _approximate_input_tokens(messages)
+
+
 def _resolve_llm_runtime_settings() -> tuple[float, int, int | None]:
     temperature = float(EXPERIMENT_CONFIG.get("llm_temperature", 0.0))
     max_new_tokens = int(EXPERIMENT_CONFIG.get("llm_max_new_tokens") or 1024)
@@ -216,12 +272,19 @@ def _resolve_llm_runtime_settings() -> tuple[float, int, int | None]:
 
 def build_llm_client(debug: bool, use_mock_llm: bool = False) -> BaseLLMClient:
     """根据配置构建统一的 LLM 客户端。"""
-    llm_model = (
-        EXPERIMENT_CONFIG["debug_llm"]
-        if debug
-        else EXPERIMENT_CONFIG["production_llm"]
-    )
     llm_provider = str(EXPERIMENT_CONFIG.get("llm_provider", "qwen")).strip().lower()
+    if llm_provider == "zhipu":
+        llm_model = (
+            EXPERIMENT_CONFIG["zhipu_debug_llm"]
+            if debug
+            else EXPERIMENT_CONFIG["zhipu_production_llm"]
+        )
+    else:
+        llm_model = (
+            EXPERIMENT_CONFIG["debug_llm"]
+            if debug
+            else EXPERIMENT_CONFIG["production_llm"]
+        )
     temperature, max_new_tokens, input_token_budget = _resolve_llm_runtime_settings()
 
     if use_mock_llm:
@@ -255,11 +318,21 @@ def build_llm_client(debug: bool, use_mock_llm: bool = False) -> BaseLLMClient:
             input_token_budget=input_token_budget,
         )
 
-    return LMStudioLLMClient(
+    if llm_provider == "lmstudio":
+        return LMStudioLLMClient(
+            model_name=llm_model,
+            base_url=EXPERIMENT_CONFIG["lmstudio_base_url"],
+            api_key=EXPERIMENT_CONFIG.get("lmstudio_api_key"),
+            temperature=temperature,
+            max_new_tokens=max_new_tokens,
+            input_token_budget=input_token_budget,
+        )
+
+    return ZhipuLLMClient(
         model_name=llm_model,
-        base_url=EXPERIMENT_CONFIG["lmstudio_base_url"],
-        api_key=EXPERIMENT_CONFIG.get("lmstudio_api_key"),
         temperature=temperature,
         max_new_tokens=max_new_tokens,
+        api_key=EXPERIMENT_CONFIG.get("zhipu_api_key"),
+        base_url=EXPERIMENT_CONFIG.get("zhipu_base_url"),
         input_token_budget=input_token_budget,
     )

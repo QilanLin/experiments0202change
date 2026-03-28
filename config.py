@@ -46,11 +46,15 @@ EXPERIMENT_CONFIG = {
     # LLM 配置
     "debug_llm": os.getenv("QWEN_DEBUG_MODEL", "Qwen/Qwen3-4B-Instruct-2507"),
     "production_llm": os.getenv("QWEN_PRODUCTION_MODEL", "Qwen/Qwen3-30B-A3B-Instruct-2507"),
-    "llm_provider": "qwen",
+    "llm_provider": os.getenv("LLM_PROVIDER", "qwen").strip().lower(),
     "llm_temperature": _read_float_env("LLM_TEMPERATURE", 0.0),
     "llm_max_new_tokens": _read_optional_positive_int_env("LLM_MAX_NEW_TOKENS", 10240),
     "lmstudio_base_url": os.getenv("LM_STUDIO_BASE_URL", "http://127.0.0.1:1234/v1"),
     "lmstudio_api_key": os.getenv("LM_STUDIO_API_KEY"),
+    "zhipu_debug_llm": os.getenv("ZHIPU_DEBUG_MODEL", "glm-5-turbo"),
+    "zhipu_production_llm": os.getenv("ZHIPU_PRODUCTION_MODEL", "glm-5-turbo"),
+    "zhipu_base_url": os.getenv("ZHIPU_BASE_URL", "https://open.bigmodel.cn/api/coding/paas/v4"),
+    "zhipu_api_key": os.getenv("ZHIPU_API_KEY") or os.getenv("ZAI_API_KEY"),
     "llm_input_token_budget": _read_optional_positive_int_env("LLM_INPUT_TOKEN_BUDGET", 240000),
     
     # TSFM 配置
