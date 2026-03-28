@@ -56,6 +56,10 @@ from .simulator import PortfolioSimulator
 from .simulator_models import SimulationResult
 
 
+class TSFMForecastGenerationError(RuntimeError):
+    """Raised when a required TSFM forecast fails during an experiment run."""
+
+
 class ExperimentRunner:
     """实验运行器"""
     
@@ -217,6 +221,7 @@ class ExperimentRunner:
         print(f"Generating TSFM forecasts for {forecast_date}...")
         
         forecasts = {}
+        required_tickers: list[str] = []
         for ticker in MAG7_TICKERS:
             if ticker not in self._price_data:
                 continue
@@ -229,6 +234,7 @@ class ExperimentRunner:
             if len(df_upto) < 30:
                 print(f"  Warning: {ticker} has insufficient history (< 30 days) up to {forecast_date}, skipping TSFM forecast")
                 continue
+            required_tickers.append(ticker)
             
             # 统一使用复权后的 close 列
             close_col = 'close' if 'close' in df_upto.columns else 'Close'
@@ -262,6 +268,26 @@ class ExperimentRunner:
                 forecast,
                 ticker=ticker,
                 forecast_date=forecast_date,
+            )
+
+        failed_tickers = {
+            ticker: (forecast.error or f"status={forecast.status}")
+            for ticker, forecast in forecasts.items()
+            if getattr(forecast, "status", None) not in {"success", "mock"}
+        }
+        missing_tickers = sorted(set(required_tickers) - set(forecasts))
+        if failed_tickers or missing_tickers:
+            details: list[str] = []
+            if failed_tickers:
+                failed_summary = ", ".join(
+                    f"{ticker}: {reason}" for ticker, reason in sorted(failed_tickers.items())
+                )
+                details.append(f"failed=[{failed_summary}]")
+            if missing_tickers:
+                details.append(f"missing={missing_tickers}")
+            raise TSFMForecastGenerationError(
+                f"TSFM forecast generation failed for {forecast_date}; "
+                + "; ".join(details)
             )
         
         self._tsfm_forecasts[forecast_date] = forecasts

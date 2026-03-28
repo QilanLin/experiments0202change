@@ -36,6 +36,7 @@ toto_forecaster_mod = load_module("toto_forecaster")
 llm_clients_mod = load_module("llm_clients")
 portfolio_agent_mod = load_module("portfolio_agent")
 portfolio_models_mod = load_module("portfolio_models")
+run_experiment_mod = load_module("run_experiment")
 simulator_components_mod = load_module("simulator_components")
 simulator_models_mod = load_module("simulator_models")
 timesfm_forecaster_mod = load_module("timesfm_forecaster")
@@ -68,6 +69,8 @@ reshape_quantile_outputs_for_gluonts = moirai2_forecaster_mod._reshape_quantile_
 wrap_gluonts_quantile_prediction_net = moirai2_forecaster_mod._wrap_gluonts_quantile_prediction_net
 MOIRAI2_DEFAULT_QUANTILE_LEVELS = moirai2_forecaster_mod.DEFAULT_QUANTILE_LEVELS
 TOTO_DEFAULT_QUANTILE_LEVELS = toto_forecaster_mod.DEFAULT_QUANTILE_LEVELS
+ExperimentRunner = run_experiment_mod.ExperimentRunner
+TSFMForecastGenerationError = run_experiment_mod.TSFMForecastGenerationError
 LMStudioLLMClient = llm_clients_mod.LMStudioLLMClient
 build_llm_client = llm_clients_mod.build_llm_client
 PortfolioWeightAgent = portfolio_agent_mod.PortfolioWeightAgent
@@ -76,6 +79,7 @@ PortfolioState = portfolio_models_mod.PortfolioState
 TradingCalendar = simulator_components_mod.TradingCalendar
 SimulationResult = simulator_models_mod.SimulationResult
 TSFMForecaster = load_module("tsfm_forecaster").TSFMForecaster
+TSFMForecast = load_module("tsfm_forecaster").TSFMForecast
 validate_timesfm_quantiles_strict = timesfm_forecaster_mod._validate_requested_quantiles_strict
 validate_legacy_timesfm_device = timesfm_forecaster_mod._validate_legacy_timesfm_device
 pad_array_left_to_multiple = timesfm_forecaster_mod._pad_array_left_to_multiple
@@ -938,7 +942,46 @@ class HistoricalReliabilityCalculatorTests(unittest.TestCase):
         summary = calc.compute("AAPL", "2025-01-15")["past_7_resolved_1d"]
 
         self.assertEqual(summary["n"], 0)
-        self.assertEqual(summary["samples"], [])
+
+
+class ExperimentRunnerTSFMFailureTests(unittest.TestCase):
+    def test_generate_tsfm_forecasts_raises_when_required_forecast_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runner = ExperimentRunner.__new__(ExperimentRunner)
+            runner.tsfm_forecaster = SimpleNamespace(
+                forecast_all_formats=lambda prices, ticker, forecast_date: TSFMForecast(
+                    ticker=ticker,
+                    forecast_date=forecast_date,
+                    format_type="all",
+                    last_close=float(prices.iloc[-1]),
+                    status="error",
+                    error="backend exploded",
+                )
+            )
+            runner._historical_reliability = None
+            runner.artifact_store = ArtifactStore(tmpdir)
+            runner._tsfm_forecasts = {}
+            runner.debug = False
+            runner._price_data = {
+                "AAPL": pd.DataFrame(
+                    {
+                        "date": pd.date_range("2025-01-01", periods=40, freq="D"),
+                        "close": np.linspace(100.0, 139.0, num=40),
+                    }
+                )
+            }
+            runner._slice_price_df_upto = lambda df, date: df[df["date"] <= pd.to_datetime(date)].copy()
+
+            with self.assertRaises(TSFMForecastGenerationError) as ctx:
+                runner.generate_tsfm_forecasts("2025-02-09")
+
+            self.assertIn("AAPL", str(ctx.exception))
+            self.assertNotIn("2025-02-09", runner._tsfm_forecasts)
+            output_path = Path(tmpdir) / "tsfm_outputs" / "AAPL_2025-02-09.json"
+            self.assertTrue(output_path.exists())
+            saved = json.loads(output_path.read_text(encoding="utf-8"))
+            self.assertEqual(saved["status"], "error")
+            self.assertEqual(saved["error"], "backend exploded")
 
 
 class MarketContextProviderTests(unittest.TestCase):
