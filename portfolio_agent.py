@@ -48,7 +48,7 @@ OUTPUT FORMAT (MUST follow exactly):
 }
 ```
 
-    IMPORTANT: Weights MUST sum to 1.0 exactly. All 8 assets (7 stocks + CASH) must be included."""
+IMPORTANT: Weights MUST sum to 1.0 exactly. All 8 assets (7 stocks + CASH) must be included."""
     TOKEN_TRUNCATION_MARKER = "\n\n[TRUNCATED_FOR_TOKEN_BUDGET]"
     FUNDAMENTALS_HEADER = PromptBuilder.FUNDAMENTALS_HEADER
     PRICE_HEADER = PromptBuilder.PRICE_HEADER
