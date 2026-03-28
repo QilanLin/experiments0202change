@@ -130,6 +130,22 @@ def _prepare_transformers_context_arrays(
     return prepared, forecast_context_len
 
 
+def _validate_legacy_timesfm_device(device: str) -> None:
+    """
+    The official TimesFM 2.5 torch implementation in the pinned upstream source
+    only selects CUDA or CPU internally; it does not honor MPS.
+    Since this repo forbids silent CPU fallback, reject non-CUDA devices here.
+    """
+    device_str = str(device)
+    if device_str.startswith("cuda"):
+        return
+    raise RuntimeError(
+        "TimesFM official 2.5 torch path requires CUDA in this repo. "
+        f"Requested device={device_str!r}, but upstream torch code only selects "
+        "CUDA or CPU internally. CPU fallback is disabled."
+    )
+
+
 @dataclass
 class TimesFMConfig:
     # HuggingFace 上的官方 checkpoint
@@ -251,6 +267,7 @@ class TimesFMForecaster:
             if config_quantiles:
                 self._supported_quantiles = tuple(round(float(q), 2) for q in config_quantiles)
         elif self._legacy_api:
+            _validate_legacy_timesfm_device(self.cfg.device)
             # Older TimesFM package exposes the 2.5 torch checkpoint via a
             # convenience class plus ForecastConfig/compile.
             snapshot_dir = snapshot_download(

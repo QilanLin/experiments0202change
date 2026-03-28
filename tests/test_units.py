@@ -77,6 +77,7 @@ TradingCalendar = simulator_components_mod.TradingCalendar
 SimulationResult = simulator_models_mod.SimulationResult
 TSFMForecaster = load_module("tsfm_forecaster").TSFMForecaster
 validate_timesfm_quantiles_strict = timesfm_forecaster_mod._validate_requested_quantiles_strict
+validate_legacy_timesfm_device = timesfm_forecaster_mod._validate_legacy_timesfm_device
 pad_array_left_to_multiple = timesfm_forecaster_mod._pad_array_left_to_multiple
 prepare_transformers_context_arrays = timesfm_forecaster_mod._prepare_transformers_context_arrays
 
@@ -171,6 +172,17 @@ class DeviceUtilsTests(unittest.TestCase):
         self.assertEqual(select_timesfm_backend("cuda"), "gpu")
         self.assertEqual(select_timesfm_backend("mps"), "gpu")
         self.assertEqual(select_timesfm_backend("cpu"), "cpu")
+
+
+class TimesFMDeviceProtocolTests(unittest.TestCase):
+    def test_legacy_timesfm_device_accepts_cuda_only(self) -> None:
+        validate_legacy_timesfm_device("cuda")
+        validate_legacy_timesfm_device("cuda:0")
+
+    def test_legacy_timesfm_device_rejects_mps_and_cpu(self) -> None:
+        for device in ("mps", "cpu"):
+            with self.assertRaises(RuntimeError):
+                validate_legacy_timesfm_device(device)
 
 
 class PriceRepositoryTests(unittest.TestCase):
