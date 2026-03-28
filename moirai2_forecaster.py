@@ -8,6 +8,10 @@ from typing import List, Optional, Sequence, Dict, Any
 import numpy as np
 import pandas as pd
 
+from .format_registry import TSFM_QUANTILES
+
+DEFAULT_QUANTILE_LEVELS: tuple[float, ...] = TSFM_QUANTILES
+
 # 依赖：pip install uni2ts torch numpy pandas gluonts
 try:
     import torch
@@ -216,7 +220,7 @@ class Moirai2Forecaster:
             context_df: 上下文数据 DataFrame（包含 id, timestamp, target 列）
             future_df: 未来协变量（Moirai2 暂不支持，保留接口兼容性）
             prediction_length: 预测长度
-            quantile_levels: 分位数列表，如 [0.05, 0.25, 0.5, 0.75, 0.95]
+            quantile_levels: 分位数列表，默认使用 TSFM_QUANTILES
             id_column: ID 列名
             timestamp_column: 时间戳列名
             target: 目标值列名
@@ -227,7 +231,7 @@ class Moirai2Forecaster:
         self._lazy_init(prediction_length=prediction_length)
 
         if quantile_levels is None:
-            quantile_levels = [0.05, 0.25, 0.5, 0.75, 0.95]
+            quantile_levels = list(DEFAULT_QUANTILE_LEVELS)
 
         # 兼容单序列：如果没有 id_column，就当作一个 id=0
         df = context_df.copy()

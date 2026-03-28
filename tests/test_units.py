@@ -31,6 +31,7 @@ format_renderers_mod = load_module("format_renderers")
 historical_reliability_mod = load_module("historical_reliability")
 market_context_mod = load_module("market_context")
 moirai2_forecaster_mod = load_module("moirai2_forecaster")
+toto_forecaster_mod = load_module("toto_forecaster")
 llm_clients_mod = load_module("llm_clients")
 portfolio_agent_mod = load_module("portfolio_agent")
 portfolio_models_mod = load_module("portfolio_models")
@@ -59,7 +60,10 @@ MarketContextProvider = market_context_mod.MarketContextProvider
 adapt_gluonts_quantile_prediction_output = moirai2_forecaster_mod._adapt_gluonts_quantile_prediction_output
 reshape_quantile_outputs_for_gluonts = moirai2_forecaster_mod._reshape_quantile_outputs_for_gluonts
 wrap_gluonts_quantile_prediction_net = moirai2_forecaster_mod._wrap_gluonts_quantile_prediction_net
+MOIRAI2_DEFAULT_QUANTILE_LEVELS = moirai2_forecaster_mod.DEFAULT_QUANTILE_LEVELS
+TOTO_DEFAULT_QUANTILE_LEVELS = toto_forecaster_mod.DEFAULT_QUANTILE_LEVELS
 LMStudioLLMClient = llm_clients_mod.LMStudioLLMClient
+build_llm_client = llm_clients_mod.build_llm_client
 PortfolioWeightAgent = portfolio_agent_mod.PortfolioWeightAgent
 PortfolioDecision = portfolio_models_mod.PortfolioDecision
 PortfolioState = portfolio_models_mod.PortfolioState
@@ -366,6 +370,10 @@ class DecisionParserTests(unittest.TestCase):
 class QuantileDefinitionTests(unittest.TestCase):
     def test_registry_quantiles_match_timesfm_effective_values(self) -> None:
         self.assertEqual(TSFM_QUANTILES, (0.1, 0.2, 0.5, 0.7, 0.9))
+
+    def test_moirai2_and_toto_default_quantiles_follow_registry(self) -> None:
+        self.assertEqual(tuple(MOIRAI2_DEFAULT_QUANTILE_LEVELS), TSFM_QUANTILES)
+        self.assertEqual(tuple(TOTO_DEFAULT_QUANTILE_LEVELS), TSFM_QUANTILES)
 
     def test_timesfm_strict_quantile_validation_rejects_unsupported_levels(self) -> None:
         supported = (0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9)
@@ -1134,6 +1142,17 @@ class LMStudioTokenCountingTests(unittest.TestCase):
             self.assertEqual(source, "approx_chars_div4")
         finally:
             llm_clients_mod._try_build_hf_token_counter = original_builder
+
+
+class LLMProviderConfigTests(unittest.TestCase):
+    def test_build_llm_client_rejects_unknown_provider(self) -> None:
+        original_provider = llm_clients_mod.EXPERIMENT_CONFIG.get("llm_provider")
+        try:
+            llm_clients_mod.EXPERIMENT_CONFIG["llm_provider"] = "unknown_provider"
+            with self.assertRaisesRegex(ValueError, "Unsupported llm_provider"):
+                build_llm_client(debug=True, use_mock_llm=False)
+        finally:
+            llm_clients_mod.EXPERIMENT_CONFIG["llm_provider"] = original_provider
 
 
 if __name__ == "__main__":

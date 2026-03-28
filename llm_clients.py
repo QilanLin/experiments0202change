@@ -15,6 +15,8 @@ from .config import ASSET_TICKERS, EXPERIMENT_CONFIG
 from .lmstudio_openai_chat import LMStudioOpenAIChat
 from tradingagents_tsfm_modified_v5.tradingagents.llms.local_qwen import LocalQwenChat
 
+SUPPORTED_LLM_PROVIDERS = ("qwen", "lmstudio")
+
 
 class BaseLLMClient(ABC):
     """LLM 客户端统一接口。"""
@@ -219,12 +221,19 @@ def build_llm_client(debug: bool, use_mock_llm: bool = False) -> BaseLLMClient:
         if debug
         else EXPERIMENT_CONFIG["production_llm"]
     )
-    llm_provider = EXPERIMENT_CONFIG.get("llm_provider", "qwen")
+    llm_provider = str(EXPERIMENT_CONFIG.get("llm_provider", "qwen")).strip().lower()
     temperature, max_new_tokens, input_token_budget = _resolve_llm_runtime_settings()
 
     if use_mock_llm:
         print("Using MockLLM for debugging...")
         return MockLLMClient(model_name="mock")
+
+    if llm_provider not in SUPPORTED_LLM_PROVIDERS:
+        expected = ", ".join(SUPPORTED_LLM_PROVIDERS)
+        raise ValueError(
+            f"Unsupported llm_provider={llm_provider!r}. "
+            f"Expected one of: {expected}"
+        )
 
     print(
         "[LLM] provider={provider} model={model} temp={temp} max_new_tokens={max_new} "
