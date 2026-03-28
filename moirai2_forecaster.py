@@ -24,6 +24,51 @@ except ImportError:
     _MOIRAI2_AVAILABLE = False
 
 
+def _adapt_gluonts_quantile_prediction_output(prediction_output: Any):
+    """
+    兼容 gluonts 0.16.x 的 QuantileForecastGenerator 输出协议。
+
+    当前版本会期待：
+      ((outputs,), loc, scale)
+    而 uni2ts 2.0.0 的 Moirai2Forecast.forward() 只返回 quantile tensor。
+    """
+    if isinstance(prediction_output, tuple):
+        if len(prediction_output) == 3:
+            return prediction_output
+        if len(prediction_output) == 1:
+            return prediction_output, None, None
+    return (prediction_output,), None, None
+
+
+if torch is not None:
+    class _GluonTSQuantilePredictionNetAdapter(torch.nn.Module):
+        """把 Moirai2 的裸 tensor 输出适配成 gluonts 当前需要的三元组。"""
+
+        def __init__(self, base_model: Any):
+            super().__init__()
+            self.base_model = base_model
+
+        def forward(self, *args, **kwargs):
+            return _adapt_gluonts_quantile_prediction_output(
+                self.base_model(*args, **kwargs)
+            )
+
+
+    def _wrap_gluonts_quantile_prediction_net(predictor: Any) -> Any:
+        prediction_net = getattr(predictor, "prediction_net", None)
+        if prediction_net is None:
+            return predictor
+        if isinstance(prediction_net, _GluonTSQuantilePredictionNetAdapter):
+            return predictor
+        predictor.prediction_net = _GluonTSQuantilePredictionNetAdapter(prediction_net)
+        return predictor
+else:
+    _GluonTSQuantilePredictionNetAdapter = None
+
+    def _wrap_gluonts_quantile_prediction_net(predictor: Any) -> Any:
+        return predictor
+
+
 def _infer_freq_from_group(ts: pd.Series) -> pd.Timedelta:
     """
     从 timestamp 推断频率；推断失败则用中位数差分兜底。
@@ -123,6 +168,8 @@ class Moirai2Forecaster:
         
         # 创建预测器
         self._predictor = self._model.create_predictor(batch_size=self.cfg.batch_size)
+        # 兼容服务器当前的 gluonts 0.16.x：它要求 prediction_net 返回 ((outputs,), loc, scale)。
+        self._predictor = _wrap_gluonts_quantile_prediction_net(self._predictor)
         
         # 更新配置中的预测长度
         self.cfg.prediction_length = prediction_length

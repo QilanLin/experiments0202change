@@ -27,6 +27,7 @@ format_registry_mod = load_module("format_registry")
 format_renderers_mod = load_module("format_renderers")
 historical_reliability_mod = load_module("historical_reliability")
 market_context_mod = load_module("market_context")
+moirai2_forecaster_mod = load_module("moirai2_forecaster")
 portfolio_models_mod = load_module("portfolio_models")
 simulator_components_mod = load_module("simulator_components")
 simulator_models_mod = load_module("simulator_models")
@@ -50,6 +51,8 @@ Format7BRenderer = format_renderers_mod.Format7BRenderer
 HistoricalReliabilityCalculator = historical_reliability_mod.HistoricalReliabilityCalculator
 DailyMarketContext = market_context_mod.DailyMarketContext
 MarketContextProvider = market_context_mod.MarketContextProvider
+adapt_gluonts_quantile_prediction_output = moirai2_forecaster_mod._adapt_gluonts_quantile_prediction_output
+wrap_gluonts_quantile_prediction_net = moirai2_forecaster_mod._wrap_gluonts_quantile_prediction_net
 PortfolioDecision = portfolio_models_mod.PortfolioDecision
 PortfolioState = portfolio_models_mod.PortfolioState
 TradingCalendar = simulator_components_mod.TradingCalendar
@@ -570,6 +573,37 @@ class TSFMDtypeProtocolTests(unittest.TestCase):
         self.assertAlmostEqual(forecast.ratio_1d, expected)
         self.assertTrue(all(isinstance(v, float) for v in ratio_quantile_multi.values()))
         self.assertTrue(all(v == expected for v in ratio_quantile_multi.values()))
+
+
+class Moirai2CompatibilityTests(unittest.TestCase):
+    def test_adapt_gluonts_quantile_prediction_output_wraps_bare_tensor_output(self) -> None:
+        raw_output = np.array([[1.0, 2.0]], dtype=np.float32)
+
+        outputs, loc, scale = adapt_gluonts_quantile_prediction_output(raw_output)
+
+        self.assertIsNone(loc)
+        self.assertIsNone(scale)
+        self.assertEqual(len(outputs), 1)
+        self.assertTrue(np.array_equal(outputs[0], raw_output))
+
+    def test_adapt_gluonts_quantile_prediction_output_preserves_existing_triples(self) -> None:
+        triple = ((np.array([1.0], dtype=np.float32),), "loc", "scale")
+
+        adapted = adapt_gluonts_quantile_prediction_output(triple)
+
+        self.assertIs(adapted, triple)
+
+    def test_wrap_gluonts_quantile_prediction_net_makes_predictor_output_compatible(self) -> None:
+        predictor = SimpleNamespace(
+            prediction_net=lambda **kwargs: np.array([kwargs["value"]], dtype=np.float32)
+        )
+
+        wrap_gluonts_quantile_prediction_net(predictor)
+        outputs, loc, scale = predictor.prediction_net(value=3.0)
+
+        self.assertIsNone(loc)
+        self.assertIsNone(scale)
+        self.assertEqual(outputs[0].tolist(), [3.0])
 
 
 class RendererOutputProtocolTests(unittest.TestCase):
