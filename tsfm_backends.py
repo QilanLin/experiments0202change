@@ -5,6 +5,8 @@ from typing import Any, List
 
 import pandas as pd
 
+from .device_utils import select_torch_device
+
 try:
     from chronos import Chronos2Pipeline
     _CHRONOS_AVAILABLE = True
@@ -87,7 +89,7 @@ class ChronosBackend(BaseTSFMBackend):
         if _CHRONOS_PIPELINE is None:
             try:
                 import torch
-                device_map = self.device or ("cuda" if torch.cuda.is_available() else "cpu")
+                device_map = select_torch_device(self.device, torch_mod=torch)
             except ImportError:
                 device_map = "cpu"
 

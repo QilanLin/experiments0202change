@@ -26,6 +26,7 @@ data_repositories_mod = load_module("data_repositories")
 artifact_store_mod = load_module("artifact_store")
 daily_decision_pipeline_mod = load_module("daily_decision_pipeline")
 decision_parser_mod = load_module("decision_parser")
+device_utils_mod = load_module("device_utils")
 format_registry_mod = load_module("format_registry")
 format_renderers_mod = load_module("format_renderers")
 historical_reliability_mod = load_module("historical_reliability")
@@ -44,6 +45,8 @@ PriceRepository = data_repositories_mod.PriceRepository
 ArtifactStore = artifact_store_mod.ArtifactStore
 DailyDecisionPipeline = daily_decision_pipeline_mod.DailyDecisionPipeline
 DecisionParser = decision_parser_mod.DecisionParser
+select_timesfm_backend = device_utils_mod.select_timesfm_backend
+select_torch_device = device_utils_mod.select_torch_device
 TSFM_QUANTILES = format_registry_mod.TSFM_QUANTILES
 HORIZON_SPECS = format_registry_mod.HORIZON_SPECS
 RendererContext = format_renderers_mod.RendererContext
@@ -129,6 +132,38 @@ class AlphaVantageLoaderTests(unittest.TestCase):
 
         self.assertEqual(sorted(result["fundamentals"].keys()), ["AAPL", "MSFT"])
         self.assertEqual(fundamentals_calls, ["AAPL", "MSFT"])
+
+
+class DeviceUtilsTests(unittest.TestCase):
+    def test_select_torch_device_prefers_explicit_device(self) -> None:
+        fake_torch = SimpleNamespace(
+            cuda=SimpleNamespace(is_available=lambda: True),
+            backends=SimpleNamespace(mps=SimpleNamespace(is_available=lambda: True)),
+        )
+        self.assertEqual(select_torch_device("cpu", torch_mod=fake_torch), "cpu")
+
+    def test_select_torch_device_prefers_cuda_then_mps_then_cpu(self) -> None:
+        cuda_torch = SimpleNamespace(
+            cuda=SimpleNamespace(is_available=lambda: True),
+            backends=SimpleNamespace(mps=SimpleNamespace(is_available=lambda: True)),
+        )
+        mps_torch = SimpleNamespace(
+            cuda=SimpleNamespace(is_available=lambda: False),
+            backends=SimpleNamespace(mps=SimpleNamespace(is_available=lambda: True)),
+        )
+        cpu_torch = SimpleNamespace(
+            cuda=SimpleNamespace(is_available=lambda: False),
+            backends=SimpleNamespace(mps=SimpleNamespace(is_available=lambda: False)),
+        )
+
+        self.assertEqual(select_torch_device(torch_mod=cuda_torch), "cuda")
+        self.assertEqual(select_torch_device(torch_mod=mps_torch), "mps")
+        self.assertEqual(select_torch_device(torch_mod=cpu_torch), "cpu")
+
+    def test_select_timesfm_backend_treats_mps_as_gpu_backend(self) -> None:
+        self.assertEqual(select_timesfm_backend("cuda"), "gpu")
+        self.assertEqual(select_timesfm_backend("mps"), "gpu")
+        self.assertEqual(select_timesfm_backend("cpu"), "cpu")
 
 
 class PriceRepositoryTests(unittest.TestCase):

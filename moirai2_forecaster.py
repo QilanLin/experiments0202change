@@ -8,6 +8,7 @@ from typing import List, Optional, Sequence, Dict, Any
 import numpy as np
 import pandas as pd
 
+from .device_utils import select_torch_device
 from .format_registry import TSFM_QUANTILES
 
 DEFAULT_QUANTILE_LEVELS: tuple[float, ...] = TSFM_QUANTILES
@@ -176,10 +177,7 @@ class Moirai2Forecaster:
         
         # device 自动选择
         if self.cfg.device is None:
-            if torch.cuda.is_available():
-                self.cfg.device = "cuda"
-            else:
-                self.cfg.device = "cpu"
+            self.cfg.device = select_torch_device(torch_mod=torch)
 
         # 加载模型
         module = Moirai2Module.from_pretrained(self.cfg.model_id)

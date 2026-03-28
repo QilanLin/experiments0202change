@@ -10,6 +10,8 @@ from typing import List, Optional, Sequence, Dict, Any
 import numpy as np
 import pandas as pd
 
+from .device_utils import select_timesfm_backend, select_torch_device
+
 # 依赖：pip install timesfm torch numpy pandas
 try:
     import torch
@@ -236,10 +238,7 @@ class TimesFMForecaster:
 
         # device 自动选择
         if self.cfg.device is None:
-            if torch.cuda.is_available():
-                self.cfg.device = "cuda"
-            else:
-                self.cfg.device = "cpu"
+            self.cfg.device = select_torch_device(torch_mod=torch)
 
         max_context = _round_up(int(self.cfg.max_context), 32)
         max_horizon = _round_up(int(self.cfg.max_horizon), 128)
@@ -284,7 +283,7 @@ class TimesFMForecaster:
             # timesfm>=1.3.0 exposes a unified TimesFm API that is initialized
             # with hparams + checkpoint instead of from_pretrained/compile.
             self._patch_timesfm_torch_loader()
-            backend = "gpu" if self.cfg.device and self.cfg.device.startswith("cuda") else "cpu"
+            backend = select_timesfm_backend(self.cfg.device)
             hparams = timesfm.TimesFmHparams(
                 context_len=max_context,
                 horizon_len=max_horizon,
