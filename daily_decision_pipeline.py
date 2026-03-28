@@ -38,6 +38,10 @@ class DailyDecisionPipeline:
             "market_context": context.to_dict(),
             "messages": prepared_request["messages"],
             "prompt": prepared_request["prompt"],
+            "input_token_count": prepared_request.get("input_token_count"),
+            "input_token_count_source": prepared_request.get("input_token_count_source"),
+            "input_token_budget": prepared_request.get("input_token_budget"),
+            "input_token_over_budget": prepared_request.get("input_token_over_budget", False),
             "experiment_type": self.portfolio_agent.experiment_type,
             "tsfm_format": self.portfolio_agent.tsfm_format,
         }

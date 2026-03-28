@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import math
 import random
 from abc import ABC, abstractmethod
 from typing import Any
@@ -15,6 +17,28 @@ class BaseLLMClient(ABC):
     @abstractmethod
     def invoke(self, messages: Any) -> Any:
         """调用模型并返回原始响应对象。"""
+
+    def inspect_messages(self, messages: Any) -> dict[str, Any]:
+        token_count, source = self._estimate_input_tokens(messages)
+        budget = getattr(self, "input_token_budget", None)
+        return {
+            "input_token_count": token_count,
+            "input_token_count_source": source,
+            "input_token_budget": budget,
+            "input_token_over_budget": (
+                budget is not None and token_count is not None and token_count > budget
+            ),
+        }
+
+    @abstractmethod
+    def _estimate_input_tokens(self, messages: Any) -> tuple[int | None, str]:
+        """估算或精确计算输入 token 数。"""
+
+
+def _approximate_input_tokens(messages: Any) -> tuple[int, str]:
+    # LM Studio/OpenAI 兼容路径拿不到底层 tokenizer 时，退化成字符近似。
+    payload = json.dumps(messages, ensure_ascii=False, default=str)
+    return max(1, math.ceil(len(payload) / 4)), "approx_chars_div4"
 
 
 class MockLLMClient(BaseLLMClient):
@@ -44,18 +68,32 @@ class MockLLMClient(BaseLLMClient):
 
         return MockResponse(response)
 
+    def _estimate_input_tokens(self, messages: Any) -> tuple[int | None, str]:
+        return _approximate_input_tokens(messages)
+
 
 class QwenLLMClient(BaseLLMClient):
     """本地 Qwen 客户端适配器。"""
 
-    def __init__(self, model_name: str, temperature: float = 0.0):
+    def __init__(
+        self,
+        model_name: str,
+        temperature: float = 0.0,
+        input_token_budget: int | None = None,
+    ):
         self._client = LocalQwenChat(
             model_name=model_name,
             temperature=temperature,
         )
+        self.input_token_budget = input_token_budget
 
     def invoke(self, messages: Any) -> Any:
         return self._client.invoke(messages)
+
+    def _estimate_input_tokens(self, messages: Any) -> tuple[int | None, str]:
+        if hasattr(self._client, "count_input_tokens"):
+            return self._client.count_input_tokens(messages), "qwen_tokenizer"
+        return _approximate_input_tokens(messages)
 
 
 class LMStudioLLMClient(BaseLLMClient):
@@ -67,6 +105,7 @@ class LMStudioLLMClient(BaseLLMClient):
         base_url: str,
         api_key: str | None = None,
         temperature: float = 0.0,
+        input_token_budget: int | None = None,
     ):
         self._client = LMStudioOpenAIChat(
             model_name=model_name,
@@ -74,9 +113,13 @@ class LMStudioLLMClient(BaseLLMClient):
             api_key=api_key,
             temperature=temperature,
         )
+        self.input_token_budget = input_token_budget
 
     def invoke(self, messages: Any) -> Any:
         return self._client.invoke(messages)
+
+    def _estimate_input_tokens(self, messages: Any) -> tuple[int | None, str]:
+        return _approximate_input_tokens(messages)
 
 
 def build_llm_client(debug: bool, use_mock_llm: bool = False) -> BaseLLMClient:
@@ -93,11 +136,16 @@ def build_llm_client(debug: bool, use_mock_llm: bool = False) -> BaseLLMClient:
         return MockLLMClient(model_name="mock")
 
     if llm_provider == "qwen":
-        return QwenLLMClient(model_name=llm_model, temperature=0.0)
+        return QwenLLMClient(
+            model_name=llm_model,
+            temperature=0.0,
+            input_token_budget=EXPERIMENT_CONFIG.get("llm_input_token_budget"),
+        )
 
     return LMStudioLLMClient(
         model_name=llm_model,
         base_url=EXPERIMENT_CONFIG["lmstudio_base_url"],
         api_key=EXPERIMENT_CONFIG.get("lmstudio_api_key"),
         temperature=0.0,
+        input_token_budget=EXPERIMENT_CONFIG.get("llm_input_token_budget"),
     )

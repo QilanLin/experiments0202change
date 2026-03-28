@@ -28,6 +28,7 @@ format_renderers_mod = load_module("format_renderers")
 historical_reliability_mod = load_module("historical_reliability")
 market_context_mod = load_module("market_context")
 moirai2_forecaster_mod = load_module("moirai2_forecaster")
+portfolio_agent_mod = load_module("portfolio_agent")
 portfolio_models_mod = load_module("portfolio_models")
 simulator_components_mod = load_module("simulator_components")
 simulator_models_mod = load_module("simulator_models")
@@ -54,6 +55,7 @@ MarketContextProvider = market_context_mod.MarketContextProvider
 adapt_gluonts_quantile_prediction_output = moirai2_forecaster_mod._adapt_gluonts_quantile_prediction_output
 reshape_quantile_outputs_for_gluonts = moirai2_forecaster_mod._reshape_quantile_outputs_for_gluonts
 wrap_gluonts_quantile_prediction_net = moirai2_forecaster_mod._wrap_gluonts_quantile_prediction_net
+PortfolioWeightAgent = portfolio_agent_mod.PortfolioWeightAgent
 PortfolioDecision = portfolio_models_mod.PortfolioDecision
 PortfolioState = portfolio_models_mod.PortfolioState
 TradingCalendar = simulator_components_mod.TradingCalendar
@@ -940,6 +942,10 @@ class DailyDecisionPipelineTests(unittest.TestCase):
                             {"role": "user", "content": "user"},
                         ],
                         "prompt": "prompt-text",
+                        "input_token_count": 321,
+                        "input_token_count_source": "test",
+                        "input_token_budget": 1024,
+                        "input_token_over_budget": False,
                     }
 
                 def decide_from_request(self, prepared_request):
@@ -980,10 +986,76 @@ class DailyDecisionPipelineTests(unittest.TestCase):
             self.assertEqual(saved_input["market_context"]["fundamentals"]["AAPL"], "fa")
             self.assertEqual(saved_input["messages"][0]["role"], "system")
             self.assertEqual(saved_input["prompt"], "prompt-text")
+            self.assertEqual(saved_input["input_token_count"], 321)
+            self.assertEqual(saved_input["input_token_count_source"], "test")
+            self.assertEqual(saved_input["input_token_budget"], 1024)
+            self.assertFalse(saved_input["input_token_over_budget"])
             self.assertEqual(saved_input["tsfm_format"], 7)
             self.assertEqual(saved["decision_date"], "2025-01-03")
             self.assertEqual(saved["prompt"], "prompt-text")
             self.assertEqual(decision.action, "rebalance")
+
+
+class PortfolioWeightAgentTokenBudgetTests(unittest.TestCase):
+    def test_prepare_request_records_llm_token_inspection(self) -> None:
+        class FakeLLM:
+            def inspect_messages(self, messages):
+                self.messages = messages
+                return {
+                    "input_token_count": 456,
+                    "input_token_count_source": "fake",
+                    "input_token_budget": 2048,
+                    "input_token_over_budget": False,
+                }
+
+        agent = PortfolioWeightAgent(FakeLLM(), "baseline_llm_only", None)
+
+        prepared = agent.prepare_request(
+            current_date="2025-01-03",
+            fundamentals={"AAPL": "fa"},
+            price_history={"AAPL": [100.0, 101.0]},
+            tsfm_forecasts=None,
+            current_weights={"AAPL": 0.5, "CASH": 0.5},
+        )
+
+        self.assertEqual(prepared["input_token_count"], 456)
+        self.assertEqual(prepared["input_token_count_source"], "fake")
+        self.assertEqual(prepared["input_token_budget"], 2048)
+        self.assertFalse(prepared["input_token_over_budget"])
+
+    def test_decide_from_request_rejects_over_budget_prompt_before_invoke(self) -> None:
+        class FakeLLM:
+            def __init__(self) -> None:
+                self.invoke_called = False
+
+            def inspect_messages(self, messages):
+                return {
+                    "input_token_count": 999,
+                    "input_token_count_source": "fake",
+                    "input_token_budget": 512,
+                    "input_token_over_budget": True,
+                }
+
+            def invoke(self, messages):
+                self.invoke_called = True
+                raise AssertionError("invoke should not be called for over-budget prompts")
+
+        llm = FakeLLM()
+        agent = PortfolioWeightAgent(llm, "baseline_llm_only", None)
+        prepared = {
+            "decision_date": "2025-01-03",
+            "messages": [{"role": "system", "content": "s"}],
+            "prompt": "prompt-text",
+            "input_token_count": 999,
+            "input_token_count_source": "fake",
+            "input_token_budget": 512,
+            "input_token_over_budget": True,
+        }
+
+        with self.assertRaisesRegex(ValueError, "LLM input token budget exceeded"):
+            agent.decide_from_request(prepared)
+
+        self.assertFalse(llm.invoke_called)
 
 
 if __name__ == "__main__":

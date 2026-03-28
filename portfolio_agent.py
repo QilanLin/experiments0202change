@@ -74,10 +74,21 @@ IMPORTANT: Weights MUST sum to 1.0 exactly. All 8 assets (7 stocks + CASH) must 
         )
         messages = self.prompt_builder.build_messages(self.SYSTEM_PROMPT, user_context)
         prompt_str = self.prompt_builder.format_prompt_for_saving(messages)
+        inspection = (
+            self.llm.inspect_messages(messages)
+            if hasattr(self.llm, "inspect_messages")
+            else {
+                "input_token_count": None,
+                "input_token_count_source": "unavailable",
+                "input_token_budget": None,
+                "input_token_over_budget": False,
+            }
+        )
         return {
             "decision_date": current_date,
             "messages": messages,
             "prompt": prompt_str,
+            **inspection,
         }
 
     def decide_from_request(self, prepared_request: Dict[str, Any]) -> PortfolioDecision:
@@ -85,6 +96,15 @@ IMPORTANT: Weights MUST sum to 1.0 exactly. All 8 assets (7 stocks + CASH) must 
         current_date = prepared_request["decision_date"]
         messages = prepared_request["messages"]
         prompt_str = prepared_request["prompt"]
+        token_count = prepared_request.get("input_token_count")
+        token_budget = prepared_request.get("input_token_budget")
+        token_source = prepared_request.get("input_token_count_source", "unknown")
+
+        if prepared_request.get("input_token_over_budget"):
+            raise ValueError(
+                f"LLM input token budget exceeded for {current_date}: "
+                f"{token_count} > {token_budget} ({token_source})"
+            )
 
         result = self.llm.invoke(messages)
         output = result.content if hasattr(result, 'content') else str(result)

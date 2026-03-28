@@ -22,6 +22,14 @@ CASH_TICKER = "CASH"
 ASSET_TICKERS = MAG7_TICKERS + [CASH_TICKER]
 
 # 实验配置
+def _read_optional_positive_int_env(name: str, default: int | None) -> int | None:
+    raw = os.getenv(name)
+    if raw is None or raw == "":
+        return default
+    value = int(raw)
+    return None if value <= 0 else value
+
+
 EXPERIMENT_CONFIG = {
     # 基本设置
     "initial_capital": 1_000_000,  # 本金 1M
@@ -34,6 +42,7 @@ EXPERIMENT_CONFIG = {
     "llm_provider": "qwen",
     "lmstudio_base_url": os.getenv("LM_STUDIO_BASE_URL", "http://127.0.0.1:1234/v1"),
     "lmstudio_api_key": os.getenv("LM_STUDIO_API_KEY"),
+    "llm_input_token_budget": _read_optional_positive_int_env("LLM_INPUT_TOKEN_BUDGET", 24000),
     
     # TSFM 配置
     "tsfm_model": "amazon/chronos-2",
