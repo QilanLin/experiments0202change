@@ -144,6 +144,9 @@ class TimesFMConfig:
     infer_is_positive: bool = True
     fix_quantile_crossing: bool = True
     return_backcast: bool = False
+    # 论文主实验默认只接受官方 2.5 torch API。
+    # 如需临时调试 transformers fallback，必须显式打开。
+    allow_transformers_fallback: bool = False
 
     # 设备
     device: Optional[str] = None  # None -> auto
@@ -169,7 +172,20 @@ class TimesFMForecaster:
         # transformers TimesFM implementation does not currently load the
         # google/timesfm-2.5-200m-pytorch checkpoint cleanly in this setup.
         self._legacy_api = hasattr(timesfm, "TimesFM_2p5_200M_torch")
-        self._use_transformers_model = TimesFmModelForPrediction is not None and not self._legacy_api
+        self._use_transformers_model = (
+            TimesFmModelForPrediction is not None
+            and not self._legacy_api
+            and self.cfg.allow_transformers_fallback
+        )
+        if not self._legacy_api and not self.cfg.allow_transformers_fallback:
+            module_path = getattr(timesfm, "__file__", "unknown")
+            raise RuntimeError(
+                "TimesFM official 2.5 torch API is required for reproducible experiments, "
+                "but the imported `timesfm` package does not expose `TimesFM_2p5_200M_torch`. "
+                f"Imported module path: {module_path}. "
+                "Use the official TimesFM clone/package on PYTHONPATH, or explicitly set "
+                "`allow_transformers_fallback=True` only for non-paper debugging."
+            )
         # TimesFM checkpoints expose a fixed quantile set (typically 0.1..0.9).
         # Keep strict semantics: unsupported requests should fail fast.
         self._supported_quantiles = tuple(round(i / 10, 1) for i in range(1, 10))

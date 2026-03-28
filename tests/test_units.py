@@ -392,6 +392,51 @@ class QuantileDefinitionTests(unittest.TestCase):
         self.assertTrue(np.array_equal(prepared[1][-231:], short_arr))
         self.assertTrue(np.all(prepared[1][:25] == short_arr[0]))
 
+    def test_timesfm_requires_official_2p5_api_by_default(self) -> None:
+        original_available = timesfm_forecaster_mod._TIMESFM_AVAILABLE
+        original_timesfm = timesfm_forecaster_mod.timesfm
+        original_transformers_model = timesfm_forecaster_mod.TimesFmModelForPrediction
+        try:
+            timesfm_forecaster_mod._TIMESFM_AVAILABLE = True
+            timesfm_forecaster_mod.timesfm = SimpleNamespace(
+                __file__="/fake/site-packages/timesfm/__init__.py"
+            )
+            timesfm_forecaster_mod.TimesFmModelForPrediction = object
+
+            with self.assertRaises(RuntimeError) as ctx:
+                timesfm_forecaster_mod.TimesFMForecaster()
+
+            message = str(ctx.exception)
+            self.assertIn("TimesFM official 2.5 torch API is required", message)
+            self.assertIn("/fake/site-packages/timesfm/__init__.py", message)
+            self.assertIn("allow_transformers_fallback=True", message)
+        finally:
+            timesfm_forecaster_mod._TIMESFM_AVAILABLE = original_available
+            timesfm_forecaster_mod.timesfm = original_timesfm
+            timesfm_forecaster_mod.TimesFmModelForPrediction = original_transformers_model
+
+    def test_timesfm_can_explicitly_allow_transformers_fallback_for_debugging(self) -> None:
+        original_available = timesfm_forecaster_mod._TIMESFM_AVAILABLE
+        original_timesfm = timesfm_forecaster_mod.timesfm
+        original_transformers_model = timesfm_forecaster_mod.TimesFmModelForPrediction
+        try:
+            timesfm_forecaster_mod._TIMESFM_AVAILABLE = True
+            timesfm_forecaster_mod.timesfm = SimpleNamespace(
+                __file__="/fake/site-packages/timesfm/__init__.py"
+            )
+            timesfm_forecaster_mod.TimesFmModelForPrediction = object
+
+            forecaster = timesfm_forecaster_mod.TimesFMForecaster(
+                timesfm_forecaster_mod.TimesFMConfig(allow_transformers_fallback=True)
+            )
+
+            self.assertFalse(forecaster._legacy_api)
+            self.assertTrue(forecaster._use_transformers_model)
+        finally:
+            timesfm_forecaster_mod._TIMESFM_AVAILABLE = original_available
+            timesfm_forecaster_mod.timesfm = original_timesfm
+            timesfm_forecaster_mod.TimesFmModelForPrediction = original_transformers_model
+
     def test_format4_uses_updated_lower_and_upper_percentile_labels(self) -> None:
         context = RendererContext(
             horizon_specs=HORIZON_SPECS,
