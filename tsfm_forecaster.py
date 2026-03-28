@@ -120,6 +120,7 @@ class TSFMForecaster:
         model_name: str = "amazon/chronos-2", 
         device: str = None, 
         use_mock: bool = False,
+        debug: bool = False,
         input_dir: str = "tsfm_inputs",
         artifact_store = None,
     ):
@@ -136,6 +137,10 @@ class TSFMForecaster:
         self.model_name = model_name  # Chronos 模型名称
         self.device = device
         self.use_mock = use_mock
+        self.debug = debug
+        self.verbose_prediction_debug = str(
+            os.getenv("TSFM_VERBOSE_PREDICTION_DEBUG", "")
+        ).strip().lower() in {"1", "true", "yes", "on"}
         self.input_dir = input_dir
         self.artifact_store = artifact_store
         self._renderers = build_format_renderers()
@@ -261,6 +266,16 @@ class TSFMForecaster:
         baseline = self._cast_scalar_like(last_close, values)
         return (values - baseline) / baseline
 
+    def _extract_quantile_values_map(self, pred_df: pd.DataFrame) -> Dict[str, np.ndarray]:
+        """一次性提取所有 quantile，避免重复列查找和 dtype 路径分叉。"""
+        return {
+            str(q): self._extract_quantile(pred_df, q)
+            for q in self.QUANTILES
+        }
+
+    def _should_log_prediction_debug(self) -> bool:
+        return bool(self.debug or self.verbose_prediction_debug)
+
     def forecast_all_formats(
             self,
             prices: pd.Series,
@@ -329,12 +344,13 @@ class TSFMForecaster:
 
             pred_30d = self._run_forecast(context_df, 30, self.QUANTILES)
 
-            if self.use_mock is False:
+            if self._should_log_prediction_debug():
                 print(f"[DEBUG] TSFM预测结果列名: {list(pred_30d.columns)}")
                 print(f"[DEBUG] TSFM预测结果形状: {pred_30d.shape}")
                 print(f"[DEBUG] TSFM预测结果前5行:\n{pred_30d.head()}")
 
-            median_30d = self._extract_quantile(pred_30d, 0.5)
+            quantile_values_map = self._extract_quantile_values_map(pred_30d)
+            median_30d = quantile_values_map[str(0.5)]
 
             if len(median_30d) == 0:
                 raise ValueError(f"预测结果为空，median_30d长度为0")
@@ -347,23 +363,20 @@ class TSFMForecaster:
             # 避免先转 list 再回填时改变保存到 tsfm_outputs 的数值表示。
             self._assign_ratio_horizons_from_values(result, median_30d, last_close)
 
-            result.numeric_quantile_30d = {}
-            for q in self.QUANTILES:
-                q_values = self._extract_quantile(pred_30d, q)
-                result.numeric_quantile_30d[str(q)] = q_values.tolist()
+            result.numeric_quantile_30d = {
+                q_key: q_values.tolist()
+                for q_key, q_values in quantile_values_map.items()
+            }
 
-            result.ratio_quantile_30d = {}
-            for q in self.QUANTILES:
-                q_values = self._extract_quantile(pred_30d, q)
-                result.ratio_quantile_30d[str(q)] = self._compute_ratio_values(q_values, last_close).tolist()
+            result.ratio_quantile_30d = {
+                q_key: self._compute_ratio_values(q_values, last_close).tolist()
+                for q_key, q_values in quantile_values_map.items()
+            }
 
-            result.ratio_quantile_multi = {}
-            for q in self.QUANTILES:
-                q_values = self._extract_quantile(pred_30d, q)
-                result.ratio_quantile_multi[str(q)] = self._build_ratio_quantile_multi(
-                    q_values,
-                    last_close,
-                )
+            result.ratio_quantile_multi = {
+                q_key: self._build_ratio_quantile_multi(q_values, last_close)
+                for q_key, q_values in quantile_values_map.items()
+            }
 
             result.status = "success"
 

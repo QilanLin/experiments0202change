@@ -50,9 +50,9 @@ OUTPUT FORMAT (MUST follow exactly):
 
     IMPORTANT: Weights MUST sum to 1.0 exactly. All 8 assets (7 stocks + CASH) must be included."""
     TOKEN_TRUNCATION_MARKER = "\n\n[TRUNCATED_FOR_TOKEN_BUDGET]"
-    FUNDAMENTALS_HEADER = "=== COMPANY FUNDAMENTALS ==="
-    PRICE_HEADER = "=== PRICE HISTORY (Last 30 days) ==="
-    TSFM_HEADER = "=== TSFM FORECASTS ==="
+    FUNDAMENTALS_HEADER = PromptBuilder.FUNDAMENTALS_HEADER
+    PRICE_HEADER = PromptBuilder.PRICE_HEADER
+    TSFM_HEADER = PromptBuilder.TSFM_HEADER
 
     def __init__(self, llm, experiment_type: str, tsfm_format: Optional[int] = None):
         self.llm = llm
@@ -73,10 +73,14 @@ OUTPUT FORMAT (MUST follow exactly):
             current_weights: Optional[Dict[str, float]] = None,
     ) -> Dict[str, Any]:
         """构造给 LLM 的结构化输入。"""
-        user_context = self.prompt_builder.build_context(
-            current_date, fundamentals, price_history,
-            tsfm_forecasts, current_weights
+        context_sections = self.prompt_builder.build_context_sections(
+            current_date=current_date,
+            fundamentals=fundamentals,
+            price_history=price_history,
+            tsfm_forecasts=tsfm_forecasts,
+            current_weights=current_weights,
         )
+        user_context = self.prompt_builder.render_context_from_sections(context_sections)
         messages = self.prompt_builder.build_messages(self.SYSTEM_PROMPT, user_context)
         inspection = self._inspect_messages(messages)
         truncated = False
@@ -87,6 +91,7 @@ OUTPUT FORMAT (MUST follow exactly):
                 messages, inspection, truncation_strategy = self._truncate_user_message_to_fit_budget(
                     messages=messages,
                     budget=int(budget),
+                    user_sections=context_sections,
                 )
                 truncated = truncation_strategy is not None
 
@@ -136,9 +141,14 @@ OUTPUT FORMAT (MUST follow exactly):
         *,
         messages: list[dict[str, str]],
         budget: int,
+        user_sections: dict[str, str | None] | None = None,
     ) -> tuple[list[dict[str, str]], Dict[str, Any], str | None]:
         by_section_messages, by_section_inspection, by_section_strategy = (
-            self._truncate_user_message_by_sections(messages=messages, budget=budget)
+            self._truncate_user_message_by_sections(
+                messages=messages,
+                budget=budget,
+                user_sections=user_sections,
+            )
         )
         if by_section_strategy is not None:
             return by_section_messages, by_section_inspection, by_section_strategy
@@ -149,13 +159,16 @@ OUTPUT FORMAT (MUST follow exactly):
         *,
         messages: list[dict[str, str]],
         budget: int,
+        user_sections: dict[str, str | None] | None = None,
     ) -> tuple[list[dict[str, str]], Dict[str, Any], str | None]:
         user_idx = next((i for i, m in enumerate(messages) if m.get("role") == "user"), None)
         if user_idx is None:
             return messages, self._inspect_messages(messages), None
 
-        user_content = str(messages[user_idx].get("content", ""))
-        sections = self._parse_user_context_sections(user_content)
+        sections = dict(user_sections) if user_sections is not None else None
+        if sections is None:
+            user_content = str(messages[user_idx].get("content", ""))
+            sections = self._parse_user_context_sections(user_content)
         if sections is None:
             return messages, self._inspect_messages(messages), None
 
@@ -217,7 +230,7 @@ OUTPUT FORMAT (MUST follow exactly):
                 chars_to_keep=mid,
                 marker=f"\n\n[TRUNCATED_{section_name.upper()}_FOR_TOKEN_BUDGET]",
             )
-            candidate_content = self._render_user_context_sections(candidate_sections)
+            candidate_content = self.prompt_builder.render_context_from_sections(candidate_sections)
             candidate_messages = deepcopy(base_messages)
             candidate_messages[user_idx]["content"] = candidate_content
             candidate_inspection = self._inspect_messages(candidate_messages)
@@ -251,22 +264,22 @@ OUTPUT FORMAT (MUST follow exactly):
         return f"{truncated}{marker}", True
 
     def _parse_user_context_sections(self, user_content: str) -> dict[str, str | None] | None:
-        fund_idx = user_content.find(self.FUNDAMENTALS_HEADER)
-        price_idx = user_content.find(self.PRICE_HEADER)
+        fund_idx = user_content.find(self.prompt_builder.FUNDAMENTALS_HEADER)
+        price_idx = user_content.find(self.prompt_builder.PRICE_HEADER)
         if fund_idx < 0 or price_idx < 0 or price_idx < fund_idx:
             return None
 
-        tsfm_idx = user_content.find(self.TSFM_HEADER)
+        tsfm_idx = user_content.find(self.prompt_builder.TSFM_HEADER)
         if tsfm_idx >= 0 and tsfm_idx < price_idx:
             return None
 
-        fund_start = fund_idx + len(self.FUNDAMENTALS_HEADER)
-        price_start = price_idx + len(self.PRICE_HEADER)
+        fund_start = fund_idx + len(self.prompt_builder.FUNDAMENTALS_HEADER)
+        price_start = price_idx + len(self.prompt_builder.PRICE_HEADER)
         prefix = user_content[:fund_idx].rstrip("\n")
 
         if tsfm_idx >= 0:
             price_end = tsfm_idx
-            tsfm_start = tsfm_idx + len(self.TSFM_HEADER)
+            tsfm_start = tsfm_idx + len(self.prompt_builder.TSFM_HEADER)
             tsfm_body = user_content[tsfm_start:].strip("\n")
         else:
             price_end = len(user_content)
@@ -282,22 +295,7 @@ OUTPUT FORMAT (MUST follow exactly):
         }
 
     def _render_user_context_sections(self, sections: dict[str, str | None]) -> str:
-        parts: list[str] = []
-        prefix = sections.get("prefix")
-        if prefix:
-            parts.append(str(prefix).strip("\n"))
-
-        parts.append(self.FUNDAMENTALS_HEADER)
-        parts.append(str(sections.get("fundamentals") or "").strip("\n"))
-        parts.append(self.PRICE_HEADER)
-        parts.append(str(sections.get("price") or "").strip("\n"))
-
-        tsfm_body = sections.get("tsfm")
-        if tsfm_body is not None:
-            parts.append(self.TSFM_HEADER)
-            parts.append(str(tsfm_body).strip("\n"))
-
-        return "\n\n".join(parts).strip("\n")
+        return self.prompt_builder.render_context_from_sections(sections)
 
     def _truncate_user_message_by_tail_binary_search(
         self,

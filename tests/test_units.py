@@ -592,6 +592,27 @@ class TSFMDtypeProtocolTests(unittest.TestCase):
         self.assertTrue(all(type(v) is np.float32 for v in ratio_quantile_multi.values()))
         self.assertTrue(all(v == expected for v in ratio_quantile_multi.values()))
 
+    def test_extract_quantile_values_map_extracts_each_quantile_once(self) -> None:
+        forecaster = TSFMForecaster.__new__(TSFMForecaster)
+        forecaster.QUANTILES = [0.1, 0.5, 0.9]
+        calls: list[float] = []
+
+        def _fake_extract(df, q):
+            calls.append(float(q))
+            return np.array([q], dtype=np.float32)
+
+        forecaster._extract_quantile = _fake_extract  # type: ignore[attr-defined]
+        quantile_map = forecaster._extract_quantile_values_map(pd.DataFrame({"predictions": [1.0]}))
+
+        self.assertEqual(calls, [0.1, 0.5, 0.9])
+        self.assertEqual(set(quantile_map.keys()), {"0.1", "0.5", "0.9"})
+
+    def test_prediction_debug_logging_flag_is_disabled_by_default(self) -> None:
+        forecaster = TSFMForecaster.__new__(TSFMForecaster)
+        forecaster.debug = False
+        forecaster.verbose_prediction_debug = False
+        self.assertFalse(forecaster._should_log_prediction_debug())
+
 
 class Moirai2CompatibilityTests(unittest.TestCase):
     def test_reshape_quantile_outputs_for_gluonts_moves_quantile_axis_last(self) -> None:
@@ -1044,6 +1065,45 @@ class PortfolioWeightAgentTokenBudgetTests(unittest.TestCase):
         )
         self.assertIn("[TRUNCATED_FOR_TOKEN_BUDGET]", prepared["messages"][1]["content"])
         self.assertLessEqual(prepared["input_token_count"], prepared["input_token_budget"])
+
+    def test_prepare_request_uses_structured_sections_for_budgeted_truncation(self) -> None:
+        class FakeLLM:
+            def inspect_messages(self, messages):
+                user_content = messages[1]["content"]
+                budget = 700
+                token_count = len(user_content)
+                return {
+                    "input_token_count": token_count,
+                    "input_token_count_source": "fake_len",
+                    "input_token_budget": budget,
+                    "input_token_over_budget": token_count > budget,
+                }
+
+        agent = PortfolioWeightAgent(FakeLLM(), "baseline_llm_only", None)
+        # 模拟后续 prompt 文案调整：若仍依赖字符串反解析，这里会退化到 tail truncation。
+        agent.prompt_builder.FUNDAMENTALS_HEADER = "=== FUNDAMENTALS CUSTOM HEADER ==="
+        agent.prompt_builder.PRICE_HEADER = "=== PRICE CUSTOM HEADER ==="
+        agent.prompt_builder.TSFM_HEADER = "=== TSFM CUSTOM HEADER ==="
+
+        prepared = agent.prepare_request(
+            current_date="2025-01-03",
+            fundamentals={"AAPL": "X" * 2600},
+            price_history={"AAPL": [100.0, 101.0]},
+            tsfm_forecasts=None,
+            current_weights={"AAPL": 0.5, "CASH": 0.5},
+        )
+
+        self.assertFalse(prepared["input_token_over_budget"])
+        self.assertTrue(prepared["input_token_truncated"])
+        self.assertEqual(
+            prepared["input_token_truncation_strategy"],
+            "section_budgeted_truncation",
+        )
+        self.assertIn(
+            "[TRUNCATED_FUNDAMENTALS_FOR_TOKEN_BUDGET]",
+            prepared["messages"][1]["content"],
+        )
+        self.assertNotIn("[TRUNCATED_FOR_TOKEN_BUDGET]", prepared["messages"][1]["content"])
 
     def test_prepare_request_records_llm_token_inspection(self) -> None:
         class FakeLLM:

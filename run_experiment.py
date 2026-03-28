@@ -81,7 +81,15 @@ class ExperimentRunner:
         # 初始化组件
         self.data_loader = AlphaVantageLoader()
         # 使用工厂函数创建 forecaster，支持 Chronos、TimeFM 和 Moirai2
-        self.tsfm_forecaster = get_forecaster(model_name=model_name, use_mock=use_mock_llm) if tsfm_format else None
+        self.tsfm_forecaster = (
+            get_forecaster(
+                model_name=model_name,
+                use_mock=use_mock_llm,
+                debug=self.debug,
+            )
+            if tsfm_format
+            else None
+        )
         self.portfolio_agent = PortfolioWeightAgent(
             self.llm, experiment_type, tsfm_format
         )
