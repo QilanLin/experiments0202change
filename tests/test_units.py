@@ -52,6 +52,7 @@ HistoricalReliabilityCalculator = historical_reliability_mod.HistoricalReliabili
 DailyMarketContext = market_context_mod.DailyMarketContext
 MarketContextProvider = market_context_mod.MarketContextProvider
 adapt_gluonts_quantile_prediction_output = moirai2_forecaster_mod._adapt_gluonts_quantile_prediction_output
+reshape_quantile_outputs_for_gluonts = moirai2_forecaster_mod._reshape_quantile_outputs_for_gluonts
 wrap_gluonts_quantile_prediction_net = moirai2_forecaster_mod._wrap_gluonts_quantile_prediction_net
 PortfolioDecision = portfolio_models_mod.PortfolioDecision
 PortfolioState = portfolio_models_mod.PortfolioState
@@ -576,15 +577,25 @@ class TSFMDtypeProtocolTests(unittest.TestCase):
 
 
 class Moirai2CompatibilityTests(unittest.TestCase):
+    def test_reshape_quantile_outputs_for_gluonts_moves_quantile_axis_last(self) -> None:
+        raw_output = np.arange(24, dtype=np.float32).reshape(2, 3, 4)
+
+        reshaped = reshape_quantile_outputs_for_gluonts(raw_output)
+
+        self.assertEqual(reshaped.shape, (2, 4, 3))
+        self.assertTrue(np.array_equal(reshaped[:, :, 0], raw_output[:, 0, :]))
+        self.assertTrue(np.array_equal(reshaped[:, :, 1], raw_output[:, 1, :]))
+
     def test_adapt_gluonts_quantile_prediction_output_wraps_bare_tensor_output(self) -> None:
-        raw_output = np.array([[1.0, 2.0]], dtype=np.float32)
+        raw_output = np.arange(24, dtype=np.float32).reshape(2, 3, 4)
 
         outputs, loc, scale = adapt_gluonts_quantile_prediction_output(raw_output)
 
         self.assertIsNone(loc)
         self.assertIsNone(scale)
         self.assertEqual(len(outputs), 1)
-        self.assertTrue(np.array_equal(outputs[0], raw_output))
+        self.assertEqual(outputs[0].shape, (2, 4, 3))
+        self.assertTrue(np.array_equal(outputs[0][:, :, 0], raw_output[:, 0, :]))
 
     def test_adapt_gluonts_quantile_prediction_output_preserves_existing_triples(self) -> None:
         triple = ((np.array([1.0], dtype=np.float32),), "loc", "scale")

@@ -36,8 +36,32 @@ def _adapt_gluonts_quantile_prediction_output(prediction_output: Any):
         if len(prediction_output) == 3:
             return prediction_output
         if len(prediction_output) == 1:
-            return prediction_output, None, None
+            prediction_output = prediction_output[0]
+
+    prediction_output = _reshape_quantile_outputs_for_gluonts(prediction_output)
     return (prediction_output,), None, None
+
+
+def _reshape_quantile_outputs_for_gluonts(prediction_output: Any):
+    """
+    把 uni2ts 的 [batch, quantile, horizon] 输出整理成
+    gluonts QuantileForecastGenerator 期待的 [batch, horizon, quantile]。
+    """
+    if torch is not None and isinstance(prediction_output, torch.Tensor):
+        if prediction_output.ndim == 4 and prediction_output.shape[-1] == 1:
+            prediction_output = prediction_output.squeeze(-1)
+        if prediction_output.ndim == 3:
+            return prediction_output.movedim(1, 2)
+        return prediction_output
+
+    if isinstance(prediction_output, np.ndarray):
+        if prediction_output.ndim == 4 and prediction_output.shape[-1] == 1:
+            prediction_output = np.squeeze(prediction_output, axis=-1)
+        if prediction_output.ndim == 3:
+            return np.moveaxis(prediction_output, 1, 2)
+        return prediction_output
+
+    return prediction_output
 
 
 if torch is not None:
