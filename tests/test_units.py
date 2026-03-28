@@ -39,6 +39,7 @@ portfolio_models_mod = load_module("portfolio_models")
 run_experiment_mod = load_module("run_experiment")
 simulator_components_mod = load_module("simulator_components")
 simulator_models_mod = load_module("simulator_models")
+tsfm_backends_mod = load_module("tsfm_backends")
 timesfm_forecaster_mod = load_module("timesfm_forecaster")
 
 AlphaVantageLoader = data_loader_mod.AlphaVantageLoader
@@ -81,6 +82,7 @@ PortfolioDecision = portfolio_models_mod.PortfolioDecision
 PortfolioState = portfolio_models_mod.PortfolioState
 TradingCalendar = simulator_components_mod.TradingCalendar
 SimulationResult = simulator_models_mod.SimulationResult
+ChronosBackend = tsfm_backends_mod.ChronosBackend
 TSFMForecaster = load_module("tsfm_forecaster").TSFMForecaster
 TSFMForecast = load_module("tsfm_forecaster").TSFMForecast
 validate_timesfm_quantiles_strict = timesfm_forecaster_mod._validate_requested_quantiles_strict
@@ -675,6 +677,85 @@ class TSFMDtypeProtocolTests(unittest.TestCase):
         self.assertFalse(forecaster._should_log_prediction_debug())
 
 
+class ChronosBackendTests(unittest.TestCase):
+    def test_chronos_backend_reuses_pipeline_for_same_model_and_device_key(self) -> None:
+        original_available = tsfm_backends_mod._CHRONOS_AVAILABLE
+        original_pipeline_cls = tsfm_backends_mod.Chronos2Pipeline
+        original_cache = dict(tsfm_backends_mod._CHRONOS_PIPELINE_CACHE)
+        calls: list[tuple[str, str]] = []
+
+        class FakeChronosPipeline:
+            @classmethod
+            def from_pretrained(cls, model_name, device_map):
+                calls.append((model_name, device_map))
+                return {"model_name": model_name, "device_map": device_map, "call_index": len(calls)}
+
+        try:
+            tsfm_backends_mod._CHRONOS_AVAILABLE = True
+            tsfm_backends_mod.Chronos2Pipeline = FakeChronosPipeline
+            tsfm_backends_mod._CHRONOS_PIPELINE_CACHE.clear()
+
+            backend_1 = ChronosBackend(device="mps", model_name="amazon/chronos-2")
+            backend_2 = ChronosBackend(device="mps", model_name="amazon/chronos-2")
+            backend_1._resolve_torch_module = lambda: SimpleNamespace()
+            backend_2._resolve_torch_module = lambda: SimpleNamespace()
+
+            pipeline_1 = backend_1.load_pipeline()
+            pipeline_2 = backend_2.load_pipeline()
+
+            self.assertEqual(calls, [("amazon/chronos-2", "mps")])
+            self.assertIs(pipeline_1, pipeline_2)
+        finally:
+            tsfm_backends_mod._CHRONOS_AVAILABLE = original_available
+            tsfm_backends_mod.Chronos2Pipeline = original_pipeline_cls
+            tsfm_backends_mod._CHRONOS_PIPELINE_CACHE.clear()
+            tsfm_backends_mod._CHRONOS_PIPELINE_CACHE.update(original_cache)
+
+    def test_chronos_backend_separates_pipeline_cache_by_model_and_device(self) -> None:
+        original_available = tsfm_backends_mod._CHRONOS_AVAILABLE
+        original_pipeline_cls = tsfm_backends_mod.Chronos2Pipeline
+        original_cache = dict(tsfm_backends_mod._CHRONOS_PIPELINE_CACHE)
+        calls: list[tuple[str, str]] = []
+
+        class FakeChronosPipeline:
+            @classmethod
+            def from_pretrained(cls, model_name, device_map):
+                calls.append((model_name, device_map))
+                return {"model_name": model_name, "device_map": device_map, "call_index": len(calls)}
+
+        try:
+            tsfm_backends_mod._CHRONOS_AVAILABLE = True
+            tsfm_backends_mod.Chronos2Pipeline = FakeChronosPipeline
+            tsfm_backends_mod._CHRONOS_PIPELINE_CACHE.clear()
+
+            backend_a = ChronosBackend(device="mps", model_name="amazon/chronos-2")
+            backend_b = ChronosBackend(device="cuda", model_name="amazon/chronos-2")
+            backend_c = ChronosBackend(device="mps", model_name="custom/chronos")
+            for backend in (backend_a, backend_b, backend_c):
+                backend._resolve_torch_module = lambda: SimpleNamespace()
+
+            pipeline_a = backend_a.load_pipeline()
+            pipeline_b = backend_b.load_pipeline()
+            pipeline_c = backend_c.load_pipeline()
+
+            self.assertEqual(
+                calls,
+                [
+                    ("amazon/chronos-2", "mps"),
+                    ("amazon/chronos-2", "cuda"),
+                    ("custom/chronos", "mps"),
+                ],
+            )
+            self.assertIsNot(pipeline_a, pipeline_b)
+            self.assertIsNot(pipeline_a, pipeline_c)
+            self.assertIsNot(pipeline_b, pipeline_c)
+        finally:
+            tsfm_backends_mod._CHRONOS_AVAILABLE = original_available
+            tsfm_backends_mod.Chronos2Pipeline = original_pipeline_cls
+            tsfm_backends_mod._CHRONOS_PIPELINE_CACHE.clear()
+            tsfm_backends_mod._CHRONOS_PIPELINE_CACHE.update(original_cache)
+
+
 class Moirai2CompatibilityTests(unittest.TestCase):
     def test_reshape_quantile_outputs_for_gluonts_moves_quantile_axis_last(self) -> None:
         raw_output = np.arange(24, dtype=np.float32).reshape(2, 3, 4)
@@ -1066,6 +1147,7 @@ class MarketContextProviderTests(unittest.TestCase):
         context = provider.build("2025-01-03", state)
 
         self.assertEqual(context.fundamentals["AAPL"], "fundamentals-AAPL-2025-01-03")
+        self.assertEqual(context.fundamentals_metadata["AAPL"]["status"], "ok")
         self.assertEqual(context.price_history["AAPL"], [100.0, 101.0, 102.0])
         self.assertEqual(context.tsfm_forecasts["AAPL"], "rendered-aapl")
         self.assertEqual(context.current_weights["CASH"], 0.0)
@@ -1086,6 +1168,51 @@ class MarketContextProviderTests(unittest.TestCase):
 
         with self.assertRaises(ValueError):
             provider.build("2025-01-02", state)
+
+    def test_build_distinguishes_no_data_from_fetch_error_in_fundamentals(self) -> None:
+        class FakeLoader:
+            def get_simple_fundamentals_asof(self, ticker, asof_date, lag_days=45):
+                if ticker == "AAPL":
+                    return {}
+                if ticker == "MSFT":
+                    raise RuntimeError("quota exceeded")
+                return {"ticker": ticker, "asof_date": asof_date}
+
+            def format_simple_fundamentals_for_llm(self, snapshot):
+                if not snapshot:
+                    return "No fundamental data available"
+                return f"fundamentals-{snapshot['ticker']}-{snapshot['asof_date']}"
+
+        price_data = {
+            "AAPL": pd.DataFrame({"date": pd.to_datetime(["2025-01-03"]), "close": [100.0]}),
+            "MSFT": pd.DataFrame({"date": pd.to_datetime(["2025-01-03"]), "close": [200.0]}),
+        }
+        provider = MarketContextProvider(
+            data_loader=FakeLoader(),
+            get_price_data=lambda: price_data,
+            get_tsfm_forecasts=lambda: {},
+            slice_price_df_upto=lambda df, date: df[df["date"] <= pd.to_datetime(date)].copy(),
+            format_tsfm_for_llm=None,
+            debug=False,
+        )
+        state = PortfolioState(
+            date="2025-01-03",
+            cash=0.0,
+            positions={},
+            prices={},
+            weights={},
+        )
+
+        context = provider.build("2025-01-03", state)
+
+        self.assertEqual(context.fundamentals["AAPL"], "No fundamental data available")
+        self.assertEqual(context.fundamentals_metadata["AAPL"]["status"], "no_data")
+        self.assertIsNone(context.fundamentals_metadata["AAPL"]["error"])
+        self.assertIn("fetch error", context.fundamentals["MSFT"])
+        self.assertIn("quota exceeded", context.fundamentals["MSFT"])
+        self.assertEqual(context.fundamentals_metadata["MSFT"]["status"], "error")
+        self.assertEqual(context.fundamentals_metadata["MSFT"]["error"], "quota exceeded")
+        self.assertEqual(context.fundamentals_metadata["GOOGL"]["status"], "ok")
 
 
 class DailyDecisionPipelineTests(unittest.TestCase):

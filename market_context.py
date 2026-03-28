@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from typing import Any, Callable, Dict, Optional
 
 import pandas as pd
@@ -17,6 +17,7 @@ class DailyMarketContext:
     price_history: Dict[str, Any]
     tsfm_forecasts: Optional[Dict[str, str]]
     current_weights: Dict[str, float]
+    fundamentals_metadata: Dict[str, Dict[str, Any]] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -44,7 +45,7 @@ class MarketContextProvider:
 
     def build(self, date: str, state: PortfolioState) -> DailyMarketContext:
         """构造某个交易日的完整市场上下文。"""
-        fundamentals = self._build_fundamentals(date)
+        fundamentals, fundamentals_metadata = self._build_fundamentals(date)
         price_history = self._build_price_history(date)
         tsfm_forecasts = self._build_tsfm_forecasts(date)
         current_weights = self._build_current_weights(state)
@@ -53,21 +54,47 @@ class MarketContextProvider:
             price_history=price_history,
             tsfm_forecasts=tsfm_forecasts,
             current_weights=current_weights,
+            fundamentals_metadata=fundamentals_metadata,
         )
 
-    def _build_fundamentals(self, date: str) -> Dict[str, str]:
+    def _build_fundamentals(self, date: str) -> tuple[Dict[str, str], Dict[str, Dict[str, Any]]]:
         fundamentals: Dict[str, str] = {}
+        fundamentals_metadata: Dict[str, Dict[str, Any]] = {}
         for ticker in MAG7_TICKERS:
             try:
                 snapshot = self.data_loader.get_simple_fundamentals_asof(
                     ticker, date, lag_days=45
                 )
-                fundamentals[ticker] = self.data_loader.format_simple_fundamentals_for_llm(snapshot)
+                rendered = self.data_loader.format_simple_fundamentals_for_llm(snapshot)
+                if self._is_empty_fundamental_snapshot(snapshot, rendered):
+                    fundamentals[ticker] = "No fundamental data available"
+                    fundamentals_metadata[ticker] = {
+                        "status": "no_data",
+                        "error": None,
+                    }
+                else:
+                    fundamentals[ticker] = rendered
+                    fundamentals_metadata[ticker] = {
+                        "status": "ok",
+                        "error": None,
+                    }
             except Exception as e:
                 if self.debug:
                     print(f"  Warning: Failed to get as-of fundamentals for {ticker} on {date}: {e}")
-                fundamentals[ticker] = "No fundamental data available"
-        return fundamentals
+                fundamentals[ticker] = (
+                    "Fundamental data unavailable due to fetch error: "
+                    f"{type(e).__name__}: {e}"
+                )
+                fundamentals_metadata[ticker] = {
+                    "status": "error",
+                    "error": str(e),
+                }
+        return fundamentals, fundamentals_metadata
+
+    def _is_empty_fundamental_snapshot(self, snapshot: Any, rendered: str) -> bool:
+        if not snapshot:
+            return True
+        return str(rendered).strip() == "No fundamental data available"
 
     def _build_price_history(self, date: str) -> Dict[str, Any]:
         price_history: Dict[str, Any] = {}

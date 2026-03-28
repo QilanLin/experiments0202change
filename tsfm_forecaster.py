@@ -276,6 +276,147 @@ class TSFMForecaster:
     def _should_log_prediction_debug(self) -> bool:
         return bool(self.debug or self.verbose_prediction_debug)
 
+    def _init_result(self, ticker: str, forecast_date: str) -> TSFMForecast:
+        return TSFMForecast(
+            ticker=ticker,
+            forecast_date=forecast_date,
+            format_type="all",
+        )
+
+    def _prepare_forecast_request(
+        self,
+        prices: pd.Series,
+        ticker: str,
+        forecast_date: str,
+    ) -> Tuple[datetime, float, pd.DataFrame]:
+        end_dt = datetime.strptime(forecast_date, "%Y-%m-%d")
+        last_close = float(prices.iloc[-1])
+        context_df = self._prepare_context(prices, ticker, end_dt)
+        return end_dt, last_close, context_df
+
+    def _build_context_payload(
+        self,
+        context_df: pd.DataFrame,
+        *,
+        ticker: str,
+        forecast_date: str,
+        end_dt: datetime,
+    ) -> Dict[str, Any]:
+        return {
+            "ticker": ticker,
+            "forecast_date": forecast_date,
+            "end_date": end_dt.isoformat(),
+            "use_mock": self.use_mock,
+            "data_points": [
+                {
+                    "id": row["id"],
+                    "timestamp": row["timestamp"].isoformat() if pd.notna(row["timestamp"]) else None,
+                    "target": float(row["target"]) if pd.notna(row["target"]) else None,
+                }
+                for _, row in context_df.iterrows()
+            ],
+            "num_points": len(context_df),
+            "last_timestamp": context_df["timestamp"].max().isoformat() if len(context_df) > 0 else None,
+            "last_value": float(context_df["target"].iloc[-1]) if len(context_df) > 0 else None,
+        }
+
+    def _save_context_payload(
+        self,
+        payload: Dict[str, Any],
+        *,
+        ticker: str,
+        forecast_date: str,
+        input_subdir: Optional[str],
+        log_input_save: bool,
+    ) -> Optional[str]:
+        if self.artifact_store is not None:
+            input_filename = self.artifact_store.save_tsfm_input(
+                payload,
+                ticker=ticker,
+                forecast_date=forecast_date,
+                input_subdir=input_subdir,
+            )
+        else:
+            target_input_dir = self.input_dir
+            if input_subdir:
+                target_input_dir = os.path.join(self.input_dir, input_subdir)
+            os.makedirs(target_input_dir, exist_ok=True)
+            input_filename = os.path.join(
+                target_input_dir, f"tsfm_input_{ticker}_{forecast_date}.json"
+            )
+            with open(input_filename, "w", encoding="utf-8") as f:
+                json.dump(payload, f, indent=2, default=str)
+
+        if log_input_save:
+            print(f"[INFO] TSFM输入已保存到: {input_filename}")
+        return input_filename
+
+    def _forecast_quantiles_with_debug(self, context_df: pd.DataFrame) -> Dict[str, np.ndarray]:
+        pred_30d = self._run_forecast(context_df, 30, self.QUANTILES)
+
+        if self._should_log_prediction_debug():
+            print(f"[DEBUG] TSFM预测结果列名: {list(pred_30d.columns)}")
+            print(f"[DEBUG] TSFM预测结果形状: {pred_30d.shape}")
+            print(f"[DEBUG] TSFM预测结果前5行:\n{pred_30d.head()}")
+
+        return self._extract_quantile_values_map(pred_30d)
+
+    def _populate_success_result(
+        self,
+        result: TSFMForecast,
+        *,
+        quantile_values_map: Dict[str, np.ndarray],
+        last_close: float,
+    ) -> None:
+        median_30d = quantile_values_map[str(0.5)]
+
+        if len(median_30d) == 0:
+            raise ValueError("预测结果为空，median_30d长度为0")
+        if len(median_30d) < 30:
+            print(f"[WARNING] 预测结果长度不足30天: {len(median_30d)}")
+
+        result.numeric_30d = median_30d.tolist()
+        result.ratio_30d = self._compute_ratio_values(median_30d, last_close).tolist()
+        # 保持 7dd225a 时代的行为：顶层 ratio_* 直接走 numpy scalar 路径，
+        # 避免先转 list 再回填时改变保存到 tsfm_outputs 的数值表示。
+        self._assign_ratio_horizons_from_values(result, median_30d, last_close)
+
+        result.numeric_quantile_30d = {
+            q_key: q_values.tolist()
+            for q_key, q_values in quantile_values_map.items()
+        }
+
+        result.ratio_quantile_30d = {
+            q_key: self._compute_ratio_values(q_values, last_close).tolist()
+            for q_key, q_values in quantile_values_map.items()
+        }
+
+        result.ratio_quantile_multi = {
+            q_key: self._build_ratio_quantile_multi(q_values, last_close)
+            for q_key, q_values in quantile_values_map.items()
+        }
+        result.status = "success"
+
+    def _mark_error_result(
+        self,
+        result: TSFMForecast,
+        *,
+        prices: pd.Series,
+        ticker: str,
+        forecast_date: str,
+        error: Exception,
+    ) -> None:
+        result.status = "error"
+        result.error = str(error)
+        import traceback
+        error_trace = traceback.format_exc()
+        print(f"[ERROR] TSFM预测失败 for {ticker} on {forecast_date}:")
+        print(f"  错误信息: {str(error)}")
+        print(f"  错误堆栈:\n{error_trace}")
+        if result.last_close is None and len(prices) > 0:
+            result.last_close = float(prices.iloc[-1])
+        self._apply_fallback(result)
+
     def forecast_all_formats(
             self,
             prices: pd.Series,
@@ -286,112 +427,49 @@ class TSFMForecaster:
             log_input_save: bool = True,
     ) -> TSFMForecast:
         """生成所有8种格式的预测"""
-        result = TSFMForecast(
-            ticker=ticker,
-            forecast_date=forecast_date,
-            format_type="all",
-        )
+        result = self._init_result(ticker, forecast_date)
 
         try:
-            end_dt = datetime.strptime(forecast_date, "%Y-%m-%d")
-            last_close = float(prices.iloc[-1])
+            end_dt, last_close, context_df = self._prepare_forecast_request(
+                prices,
+                ticker,
+                forecast_date,
+            )
             result.last_close = last_close
 
-            context_df = self._prepare_context(prices, ticker, end_dt)
-
-            context_dict = {
-                "ticker": ticker,
-                "forecast_date": forecast_date,
-                "end_date": end_dt.isoformat(),
-                "use_mock": self.use_mock,
-                "data_points": [
-                    {
-                        "id": row["id"],
-                        "timestamp": row["timestamp"].isoformat() if pd.notna(row["timestamp"]) else None,
-                        "target": float(row["target"]) if pd.notna(row["target"]) else None
-                    }
-                    for _, row in context_df.iterrows()
-                ],
-                "num_points": len(context_df),
-                "last_timestamp": context_df["timestamp"].max().isoformat() if len(context_df) > 0 else None,
-                "last_value": float(context_df["target"].iloc[-1]) if len(context_df) > 0 else None
-            }
             if save_input:
-                if self.artifact_store is not None:
-                    input_filename = self.artifact_store.save_tsfm_input(
-                        context_dict,
+                self._save_context_payload(
+                    self._build_context_payload(
+                        context_df,
                         ticker=ticker,
                         forecast_date=forecast_date,
-                        input_subdir=input_subdir,
-                    )
-                else:
-                    target_input_dir = self.input_dir
-                    if input_subdir:
-                        target_input_dir = os.path.join(self.input_dir, input_subdir)
-                    os.makedirs(target_input_dir, exist_ok=True)
-                    input_filename = os.path.join(
-                        target_input_dir, f"tsfm_input_{ticker}_{forecast_date}.json"
-                    )
-                    with open(input_filename, 'w', encoding='utf-8') as f:
-                        json.dump(context_dict, f, indent=2, default=str)
-                if log_input_save:
-                    print(f"[INFO] TSFM输入已保存到: {input_filename}")
+                        end_dt=end_dt,
+                    ),
+                    ticker=ticker,
+                    forecast_date=forecast_date,
+                    input_subdir=input_subdir,
+                    log_input_save=log_input_save,
+                )
 
             if self.use_mock:
                 result = self._generate_mock_forecast(result, last_close)
                 result.status = "mock"
                 return result
 
-            pred_30d = self._run_forecast(context_df, 30, self.QUANTILES)
-
-            if self._should_log_prediction_debug():
-                print(f"[DEBUG] TSFM预测结果列名: {list(pred_30d.columns)}")
-                print(f"[DEBUG] TSFM预测结果形状: {pred_30d.shape}")
-                print(f"[DEBUG] TSFM预测结果前5行:\n{pred_30d.head()}")
-
-            quantile_values_map = self._extract_quantile_values_map(pred_30d)
-            median_30d = quantile_values_map[str(0.5)]
-
-            if len(median_30d) == 0:
-                raise ValueError(f"预测结果为空，median_30d长度为0")
-            if len(median_30d) < 30:
-                print(f"[WARNING] 预测结果长度不足30天: {len(median_30d)}")
-
-            result.numeric_30d = median_30d.tolist()
-            result.ratio_30d = self._compute_ratio_values(median_30d, last_close).tolist()
-            # 保持 7dd225a 时代的行为：顶层 ratio_* 直接走 numpy scalar 路径，
-            # 避免先转 list 再回填时改变保存到 tsfm_outputs 的数值表示。
-            self._assign_ratio_horizons_from_values(result, median_30d, last_close)
-
-            result.numeric_quantile_30d = {
-                q_key: q_values.tolist()
-                for q_key, q_values in quantile_values_map.items()
-            }
-
-            result.ratio_quantile_30d = {
-                q_key: self._compute_ratio_values(q_values, last_close).tolist()
-                for q_key, q_values in quantile_values_map.items()
-            }
-
-            result.ratio_quantile_multi = {
-                q_key: self._build_ratio_quantile_multi(q_values, last_close)
-                for q_key, q_values in quantile_values_map.items()
-            }
-
-            result.status = "success"
-
+            quantile_values_map = self._forecast_quantiles_with_debug(context_df)
+            self._populate_success_result(
+                result,
+                quantile_values_map=quantile_values_map,
+                last_close=last_close,
+            )
         except Exception as e:
-            result.status = "error"
-            result.error = str(e)
-            import traceback
-            error_trace = traceback.format_exc()
-            print(f"[ERROR] TSFM预测失败 for {ticker} on {forecast_date}:")
-            print(f"  错误信息: {str(e)}")
-            print(f"  错误堆栈:\n{error_trace}")
-            if result.last_close is None and len(prices) > 0:
-                result.last_close = float(prices.iloc[-1])
-            self._apply_fallback(result)
-
+            self._mark_error_result(
+                result,
+                prices=prices,
+                ticker=ticker,
+                forecast_date=forecast_date,
+                error=e,
+            )
         return result
 
     def _generate_mock_forecast(self, result: TSFMForecast, last_close: float) -> TSFMForecast:

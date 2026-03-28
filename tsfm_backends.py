@@ -39,7 +39,7 @@ except ImportError:
     _TOTO_AVAILABLE = False
 
 
-_CHRONOS_PIPELINE = None
+_CHRONOS_PIPELINE_CACHE: dict[tuple[str, str], Any] = {}
 
 
 class BaseTSFMBackend(ABC):
@@ -83,25 +83,31 @@ class ChronosBackend(BaseTSFMBackend):
         if not _CHRONOS_AVAILABLE:
             raise ImportError("chronos-forecasting not installed")
 
+    def _resolve_torch_module(self):
+        try:
+            import torch
+        except ImportError as exc:
+            raise RuntimeError(
+                "Chronos backend requires torch for device selection. "
+                "CPU fallback is disabled."
+            ) from exc
+        return torch
+
     def _build_pipeline(self) -> Any:
-        global _CHRONOS_PIPELINE
+        torch = self._resolve_torch_module()
+        device_map = select_torch_device(self.device, torch_mod=torch)
+        model_name = self.model_name or "amazon/chronos-2"
+        cache_key = (model_name, device_map)
 
-        if _CHRONOS_PIPELINE is None:
-            try:
-                import torch
-            except ImportError as exc:
-                raise RuntimeError(
-                    "Chronos backend requires torch for device selection. "
-                    "CPU fallback is disabled."
-                ) from exc
-            device_map = select_torch_device(self.device, torch_mod=torch)
-
-            # 保持原有行为：Chronos backend 复用一个全局 pipeline，避免重复加载大模型。
-            _CHRONOS_PIPELINE = Chronos2Pipeline.from_pretrained(
-                self.model_name or "amazon/chronos-2", device_map=device_map
+        pipeline = _CHRONOS_PIPELINE_CACHE.get(cache_key)
+        if pipeline is None:
+            pipeline = Chronos2Pipeline.from_pretrained(
+                model_name,
+                device_map=device_map,
             )
+            _CHRONOS_PIPELINE_CACHE[cache_key] = pipeline
 
-        return _CHRONOS_PIPELINE
+        return pipeline
 
     def predict_df(
         self,
