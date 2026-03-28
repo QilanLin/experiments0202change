@@ -7,6 +7,10 @@ import numpy as np
 import pandas as pd
 
 
+class HistoricalReliabilityComputationError(RuntimeError):
+    """Raised when a required historical TSFM replay fails."""
+
+
 class HistoricalReliabilityCalculator:
     """为 format_7a / format_7b 计算过去 7 个已兑现 1D forecast 的可靠性摘要。"""
 
@@ -60,8 +64,12 @@ class HistoricalReliabilityCalculator:
             log_input_save=False,
         )
         if forecast.status == "error" or forecast.ratio_1d is None:
-            cache[origin_date] = None
-            return None
+            raise HistoricalReliabilityComputationError(
+                "Historical reliability replay failed for "
+                f"{ticker} on {origin_date}: "
+                f"status={forecast.status!r}, error={forecast.error!r}, "
+                f"ratio_1d={forecast.ratio_1d!r}"
+            )
 
         cache[origin_date] = {
             "predicted_return_1d": float(forecast.ratio_1d),

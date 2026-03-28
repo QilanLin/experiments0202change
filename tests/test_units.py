@@ -60,6 +60,9 @@ Format3Renderer = format_renderers_mod.Format3Renderer
 Format7ARenderer = format_renderers_mod.Format7ARenderer
 Format7BRenderer = format_renderers_mod.Format7BRenderer
 HistoricalReliabilityCalculator = historical_reliability_mod.HistoricalReliabilityCalculator
+HistoricalReliabilityComputationError = (
+    historical_reliability_mod.HistoricalReliabilityComputationError
+)
 DailyMarketContext = market_context_mod.DailyMarketContext
 MarketContextProvider = market_context_mod.MarketContextProvider
 adapt_gluonts_quantile_prediction_output = moirai2_forecaster_mod._adapt_gluonts_quantile_prediction_output
@@ -942,6 +945,26 @@ class HistoricalReliabilityCalculatorTests(unittest.TestCase):
         summary = calc.compute("AAPL", "2025-01-15")["past_7_resolved_1d"]
 
         self.assertEqual(summary["n"], 0)
+
+    def test_compute_raises_when_historical_forecast_replay_fails(self) -> None:
+        hist = self._make_history(periods=40)
+        calc = HistoricalReliabilityCalculator(
+            tsfm_forecaster=SimpleNamespace(
+                forecast_all_formats=lambda *args, **kwargs: SimpleNamespace(
+                    status="error",
+                    error="backend exploded",
+                    ratio_1d=None,
+                )
+            ),
+            get_price_history_df=lambda ticker: hist,
+            window_size=7,
+        )
+
+        with self.assertRaises(HistoricalReliabilityComputationError) as ctx:
+            calc.compute("AAPL", "2025-02-06")
+
+        self.assertIn("AAPL", str(ctx.exception))
+        self.assertIn("backend exploded", str(ctx.exception))
 
 
 class ExperimentRunnerTSFMFailureTests(unittest.TestCase):
