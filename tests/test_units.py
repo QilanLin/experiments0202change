@@ -45,6 +45,7 @@ PriceRepository = data_repositories_mod.PriceRepository
 ArtifactStore = artifact_store_mod.ArtifactStore
 DailyDecisionPipeline = daily_decision_pipeline_mod.DailyDecisionPipeline
 DecisionParser = decision_parser_mod.DecisionParser
+NoAcceleratorAvailableError = device_utils_mod.NoAcceleratorAvailableError
 select_timesfm_backend = device_utils_mod.select_timesfm_backend
 select_torch_device = device_utils_mod.select_torch_device
 TSFM_QUANTILES = format_registry_mod.TSFM_QUANTILES
@@ -61,6 +62,8 @@ HistoricalReliabilityCalculator = historical_reliability_mod.HistoricalReliabili
 DailyMarketContext = market_context_mod.DailyMarketContext
 MarketContextProvider = market_context_mod.MarketContextProvider
 adapt_gluonts_quantile_prediction_output = moirai2_forecaster_mod._adapt_gluonts_quantile_prediction_output
+gluonts_requires_quantile_prediction_tuple = moirai2_forecaster_mod._gluonts_requires_quantile_prediction_tuple
+maybe_wrap_gluonts_quantile_prediction_net = moirai2_forecaster_mod._maybe_wrap_gluonts_quantile_prediction_net
 reshape_quantile_outputs_for_gluonts = moirai2_forecaster_mod._reshape_quantile_outputs_for_gluonts
 wrap_gluonts_quantile_prediction_net = moirai2_forecaster_mod._wrap_gluonts_quantile_prediction_net
 MOIRAI2_DEFAULT_QUANTILE_LEVELS = moirai2_forecaster_mod.DEFAULT_QUANTILE_LEVELS
@@ -142,7 +145,7 @@ class DeviceUtilsTests(unittest.TestCase):
         )
         self.assertEqual(select_torch_device("cpu", torch_mod=fake_torch), "cpu")
 
-    def test_select_torch_device_prefers_cuda_then_mps_then_cpu(self) -> None:
+    def test_select_torch_device_prefers_cuda_then_mps(self) -> None:
         cuda_torch = SimpleNamespace(
             cuda=SimpleNamespace(is_available=lambda: True),
             backends=SimpleNamespace(mps=SimpleNamespace(is_available=lambda: True)),
@@ -151,14 +154,18 @@ class DeviceUtilsTests(unittest.TestCase):
             cuda=SimpleNamespace(is_available=lambda: False),
             backends=SimpleNamespace(mps=SimpleNamespace(is_available=lambda: True)),
         )
+
+        self.assertEqual(select_torch_device(torch_mod=cuda_torch), "cuda")
+        self.assertEqual(select_torch_device(torch_mod=mps_torch), "mps")
+
+    def test_select_torch_device_raises_when_no_accelerator_is_available(self) -> None:
         cpu_torch = SimpleNamespace(
             cuda=SimpleNamespace(is_available=lambda: False),
             backends=SimpleNamespace(mps=SimpleNamespace(is_available=lambda: False)),
         )
 
-        self.assertEqual(select_torch_device(torch_mod=cuda_torch), "cuda")
-        self.assertEqual(select_torch_device(torch_mod=mps_torch), "mps")
-        self.assertEqual(select_torch_device(torch_mod=cpu_torch), "cpu")
+        with self.assertRaises(NoAcceleratorAvailableError):
+            select_torch_device(torch_mod=cpu_torch)
 
     def test_select_timesfm_backend_treats_mps_as_gpu_backend(self) -> None:
         self.assertEqual(select_timesfm_backend("cuda"), "gpu")
@@ -688,6 +695,24 @@ class Moirai2CompatibilityTests(unittest.TestCase):
         self.assertIsNone(loc)
         self.assertIsNone(scale)
         self.assertEqual(outputs[0].tolist(), [3.0])
+
+    def test_gluonts_tuple_requirement_is_version_gated(self) -> None:
+        self.assertFalse(gluonts_requires_quantile_prediction_tuple("0.14.4"))
+        self.assertTrue(gluonts_requires_quantile_prediction_tuple("0.16.2"))
+        self.assertTrue(gluonts_requires_quantile_prediction_tuple("1.2.0"))
+
+    def test_maybe_wrap_gluonts_quantile_prediction_net_skips_old_gluonts(self) -> None:
+        predictor = SimpleNamespace(
+            prediction_net=lambda **kwargs: np.array([kwargs["value"]], dtype=np.float32)
+        )
+
+        adapted = maybe_wrap_gluonts_quantile_prediction_net(
+            predictor,
+            version_text="0.14.4",
+        )
+
+        self.assertIs(adapted, predictor)
+        self.assertEqual(adapted.prediction_net(value=3.0).tolist(), [3.0])
 
 
 class RendererOutputProtocolTests(unittest.TestCase):

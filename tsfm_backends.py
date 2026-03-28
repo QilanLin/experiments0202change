@@ -89,9 +89,12 @@ class ChronosBackend(BaseTSFMBackend):
         if _CHRONOS_PIPELINE is None:
             try:
                 import torch
-                device_map = select_torch_device(self.device, torch_mod=torch)
-            except ImportError:
-                device_map = "cpu"
+            except ImportError as exc:
+                raise RuntimeError(
+                    "Chronos backend requires torch for device selection. "
+                    "CPU fallback is disabled."
+                ) from exc
+            device_map = select_torch_device(self.device, torch_mod=torch)
 
             # 保持原有行为：Chronos backend 复用一个全局 pipeline，避免重复加载大模型。
             _CHRONOS_PIPELINE = Chronos2Pipeline.from_pretrained(

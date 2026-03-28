@@ -3,6 +3,10 @@ from __future__ import annotations
 from typing import Any
 
 
+class NoAcceleratorAvailableError(RuntimeError):
+    """Raised when auto device selection cannot find CUDA or MPS."""
+
+
 def _mps_is_available(torch_mod: Any) -> bool:
     backends = getattr(torch_mod, "backends", None)
     mps_backend = getattr(backends, "mps", None)
@@ -24,7 +28,7 @@ def select_torch_device(
     *,
     torch_mod: Any | None = None,
 ) -> str:
-    """Select a torch device with a stable priority order."""
+    """Select a torch device with a stable priority order and no CPU fallback."""
     if explicit_device:
         return explicit_device
 
@@ -42,9 +46,17 @@ def select_torch_device(
     if _mps_is_available(torch_mod):
         return "mps"
 
-    return "cpu"
+    raise NoAcceleratorAvailableError(
+        "Auto device selection found neither CUDA nor MPS. "
+        "CPU fallback is disabled."
+    )
 
 
 def select_timesfm_backend(device: str) -> str:
     """Map a torch device string to TimesFM's backend selector."""
-    return "gpu" if str(device).startswith(("cuda", "mps")) else "cpu"
+    device_str = str(device)
+    if device_str.startswith(("cuda", "mps")):
+        return "gpu"
+    if device_str.startswith("cpu"):
+        return "cpu"
+    raise ValueError(f"Unsupported TimesFM device: {device}")

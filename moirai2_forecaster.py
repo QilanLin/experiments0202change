@@ -3,6 +3,7 @@ Moirai2 Forecaster - 封装 Uni2TS Moirai2 模型为与 Chronos 兼容的接口
 """
 
 from dataclasses import dataclass
+from importlib import metadata as importlib_metadata
 from typing import List, Optional, Sequence, Dict, Any
 
 import numpy as np
@@ -27,6 +28,28 @@ except ImportError:
     Moirai2Forecast = None
     Moirai2Module = None
     _MOIRAI2_AVAILABLE = False
+
+
+def _gluonts_requires_quantile_prediction_tuple(version_text: Optional[str] = None) -> bool:
+    """
+    GluonTS 0.16+ expects prediction_net to return ((outputs,), loc, scale).
+    Earlier versions consume the bare tensor directly.
+    """
+    if version_text is None:
+        try:
+            version_text = importlib_metadata.version("gluonts")
+        except importlib_metadata.PackageNotFoundError:
+            return False
+
+    parts = []
+    for token in str(version_text).split("."):
+        digits = "".join(ch for ch in token if ch.isdigit())
+        if not digits:
+            break
+        parts.append(int(digits))
+    major = parts[0] if len(parts) >= 1 else 0
+    minor = parts[1] if len(parts) >= 2 else 0
+    return (major, minor) >= (0, 16)
 
 
 def _adapt_gluonts_quantile_prediction_output(prediction_output: Any):
@@ -96,6 +119,16 @@ else:
 
     def _wrap_gluonts_quantile_prediction_net(predictor: Any) -> Any:
         return predictor
+
+
+def _maybe_wrap_gluonts_quantile_prediction_net(
+    predictor: Any,
+    *,
+    version_text: Optional[str] = None,
+) -> Any:
+    if not _gluonts_requires_quantile_prediction_tuple(version_text):
+        return predictor
+    return _wrap_gluonts_quantile_prediction_net(predictor)
 
 
 def _infer_freq_from_group(ts: pd.Series) -> pd.Timedelta:
@@ -194,8 +227,8 @@ class Moirai2Forecaster:
         
         # 创建预测器
         self._predictor = self._model.create_predictor(batch_size=self.cfg.batch_size)
-        # 兼容服务器当前的 gluonts 0.16.x：它要求 prediction_net 返回 ((outputs,), loc, scale)。
-        self._predictor = _wrap_gluonts_quantile_prediction_net(self._predictor)
+        # 只在 gluonts 0.16+ 上做 tuple 适配；老版本仍然需要裸 tensor 输出。
+        self._predictor = _maybe_wrap_gluonts_quantile_prediction_net(self._predictor)
         
         # 更新配置中的预测长度
         self.cfg.prediction_length = prediction_length

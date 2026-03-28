@@ -100,6 +100,12 @@ class TotoForecasterWrapper:
         # device 自动选择
         if self.cfg.device is None:
             self.cfg.device = select_torch_device(torch_mod=torch)
+        if str(self.cfg.device).startswith("mps"):
+            raise RuntimeError(
+                "Toto backend does not support MPS for this experiment path, "
+                "and CPU fallback is disabled. Use CUDA, or set device='cpu' "
+                "explicitly only if you intentionally want a CPU-only run."
+            )
         
         device_obj = torch.device(self.cfg.device)
         
