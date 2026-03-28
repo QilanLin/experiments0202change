@@ -552,7 +552,7 @@ class TSFMDtypeProtocolTests(unittest.TestCase):
 
         self.assertEqual(q_values.dtype, np.float32)
 
-    def test_ratio_helpers_compute_in_backend_dtype_but_store_python_floats(self) -> None:
+    def test_ratio_helpers_preserve_backend_numpy_scalar_protocol(self) -> None:
         forecaster = TSFMForecaster.__new__(TSFMForecaster)
         forecast = SimpleNamespace()
         horizon_values = np.array([101.0] * 30, dtype=np.float32)
@@ -569,10 +569,12 @@ class TSFMDtypeProtocolTests(unittest.TestCase):
             last_close=100.0,
         )
 
-        expected = float((np.float32(101.0) - np.float32(100.0)) / np.float32(100.0))
-        self.assertIsInstance(forecast.ratio_1d, float)
-        self.assertAlmostEqual(forecast.ratio_1d, expected)
-        self.assertTrue(all(isinstance(v, float) for v in ratio_quantile_multi.values()))
+        expected = (np.float32(101.0) - np.float32(100.0)) / np.float32(100.0)
+        self.assertIsInstance(forecast.ratio_1d, np.floating)
+        self.assertEqual(type(forecast.ratio_1d), np.float32)
+        self.assertEqual(forecast.ratio_1d, expected)
+        self.assertTrue(all(isinstance(v, np.floating) for v in ratio_quantile_multi.values()))
+        self.assertTrue(all(type(v) is np.float32 for v in ratio_quantile_multi.values()))
         self.assertTrue(all(v == expected for v in ratio_quantile_multi.values()))
 
 

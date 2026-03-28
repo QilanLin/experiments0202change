@@ -488,13 +488,13 @@ class TSFMForecaster:
             setattr(
                 forecast,
                 spec.ratio_attr,
-                float((horizon_values[spec.days - 1] - baseline) / baseline),
+                (horizon_values[spec.days - 1] - baseline) / baseline,
             )
 
     def _build_ratio_quantile_multi(self, q_values: np.ndarray, last_close: float) -> Dict[str, float]:
         baseline = self._cast_scalar_like(last_close, q_values)
         return {
-            spec.key: float((q_values[spec.days - 1] - baseline) / baseline)
+            spec.key: (q_values[spec.days - 1] - baseline) / baseline
             for spec in HORIZON_SPECS
         }
 
