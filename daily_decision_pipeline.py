@@ -42,6 +42,8 @@ class DailyDecisionPipeline:
             "input_token_count_source": prepared_request.get("input_token_count_source"),
             "input_token_budget": prepared_request.get("input_token_budget"),
             "input_token_over_budget": prepared_request.get("input_token_over_budget", False),
+            "input_token_truncated": prepared_request.get("input_token_truncated", False),
+            "input_token_truncation_strategy": prepared_request.get("input_token_truncation_strategy"),
             "experiment_type": self.portfolio_agent.experiment_type,
             "tsfm_format": self.portfolio_agent.tsfm_format,
         }

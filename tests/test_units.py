@@ -14,6 +14,9 @@ import pandas as pd
 TESTS_DIR = Path(__file__).resolve().parent
 if str(TESTS_DIR) not in sys.path:
     sys.path.insert(0, str(TESTS_DIR))
+TSG_ROOT = TESTS_DIR.parents[1]
+if str(TSG_ROOT) not in sys.path:
+    sys.path.insert(0, str(TSG_ROOT))
 
 from module_loader import load_module
 
@@ -28,6 +31,7 @@ format_renderers_mod = load_module("format_renderers")
 historical_reliability_mod = load_module("historical_reliability")
 market_context_mod = load_module("market_context")
 moirai2_forecaster_mod = load_module("moirai2_forecaster")
+llm_clients_mod = load_module("llm_clients")
 portfolio_agent_mod = load_module("portfolio_agent")
 portfolio_models_mod = load_module("portfolio_models")
 simulator_components_mod = load_module("simulator_components")
@@ -55,6 +59,7 @@ MarketContextProvider = market_context_mod.MarketContextProvider
 adapt_gluonts_quantile_prediction_output = moirai2_forecaster_mod._adapt_gluonts_quantile_prediction_output
 reshape_quantile_outputs_for_gluonts = moirai2_forecaster_mod._reshape_quantile_outputs_for_gluonts
 wrap_gluonts_quantile_prediction_net = moirai2_forecaster_mod._wrap_gluonts_quantile_prediction_net
+LMStudioLLMClient = llm_clients_mod.LMStudioLLMClient
 PortfolioWeightAgent = portfolio_agent_mod.PortfolioWeightAgent
 PortfolioDecision = portfolio_models_mod.PortfolioDecision
 PortfolioState = portfolio_models_mod.PortfolioState
@@ -946,6 +951,8 @@ class DailyDecisionPipelineTests(unittest.TestCase):
                         "input_token_count_source": "test",
                         "input_token_budget": 1024,
                         "input_token_over_budget": False,
+                        "input_token_truncated": False,
+                        "input_token_truncation_strategy": None,
                     }
 
                 def decide_from_request(self, prepared_request):
@@ -990,6 +997,8 @@ class DailyDecisionPipelineTests(unittest.TestCase):
             self.assertEqual(saved_input["input_token_count_source"], "test")
             self.assertEqual(saved_input["input_token_budget"], 1024)
             self.assertFalse(saved_input["input_token_over_budget"])
+            self.assertFalse(saved_input["input_token_truncated"])
+            self.assertIsNone(saved_input["input_token_truncation_strategy"])
             self.assertEqual(saved_input["tsfm_format"], 7)
             self.assertEqual(saved["decision_date"], "2025-01-03")
             self.assertEqual(saved["prompt"], "prompt-text")
@@ -997,6 +1006,37 @@ class DailyDecisionPipelineTests(unittest.TestCase):
 
 
 class PortfolioWeightAgentTokenBudgetTests(unittest.TestCase):
+    def test_prepare_request_truncates_user_content_when_over_budget(self) -> None:
+        class FakeLLM:
+            def inspect_messages(self, messages):
+                user_content = messages[1]["content"]
+                budget = 120
+                token_count = len(user_content)
+                return {
+                    "input_token_count": token_count,
+                    "input_token_count_source": "fake_len",
+                    "input_token_budget": budget,
+                    "input_token_over_budget": token_count > budget,
+                }
+
+        agent = PortfolioWeightAgent(FakeLLM(), "baseline_llm_only", None)
+        prepared = agent.prepare_request(
+            current_date="2025-01-03",
+            fundamentals={"AAPL": "X" * 800},
+            price_history={"AAPL": [100.0, 101.0]},
+            tsfm_forecasts=None,
+            current_weights={"AAPL": 0.5, "CASH": 0.5},
+        )
+
+        self.assertFalse(prepared["input_token_over_budget"])
+        self.assertTrue(prepared["input_token_truncated"])
+        self.assertEqual(
+            prepared["input_token_truncation_strategy"],
+            "user_tail_char_truncation",
+        )
+        self.assertIn("[TRUNCATED_FOR_TOKEN_BUDGET]", prepared["messages"][1]["content"])
+        self.assertLessEqual(prepared["input_token_count"], prepared["input_token_budget"])
+
     def test_prepare_request_records_llm_token_inspection(self) -> None:
         class FakeLLM:
             def inspect_messages(self, messages):
@@ -1056,6 +1096,44 @@ class PortfolioWeightAgentTokenBudgetTests(unittest.TestCase):
             agent.decide_from_request(prepared)
 
         self.assertFalse(llm.invoke_called)
+
+
+class LMStudioTokenCountingTests(unittest.TestCase):
+    def test_lmstudio_uses_hf_token_counter_when_available(self) -> None:
+        original_builder = llm_clients_mod._try_build_hf_token_counter
+        try:
+            llm_clients_mod._try_build_hf_token_counter = lambda model: (lambda messages: 123)
+            client = LMStudioLLMClient(
+                model_name="dummy-model",
+                base_url="http://127.0.0.1:1234/v1",
+                temperature=0.0,
+                max_new_tokens=256,
+                input_token_budget=2048,
+            )
+            count, source = client._estimate_input_tokens(
+                [{"role": "system", "content": "s"}, {"role": "user", "content": "u"}]
+            )
+            self.assertEqual(count, 123)
+            self.assertEqual(source, "hf_tokenizer")
+        finally:
+            llm_clients_mod._try_build_hf_token_counter = original_builder
+
+    def test_lmstudio_falls_back_to_approximation_without_hf_counter(self) -> None:
+        original_builder = llm_clients_mod._try_build_hf_token_counter
+        try:
+            llm_clients_mod._try_build_hf_token_counter = lambda model: None
+            client = LMStudioLLMClient(
+                model_name="dummy-model",
+                base_url="http://127.0.0.1:1234/v1",
+                temperature=0.0,
+                max_new_tokens=256,
+                input_token_budget=2048,
+            )
+            count, source = client._estimate_input_tokens([{"role": "user", "content": "hello"}])
+            self.assertGreater(count, 0)
+            self.assertEqual(source, "approx_chars_div4")
+        finally:
+            llm_clients_mod._try_build_hf_token_counter = original_builder
 
 
 if __name__ == "__main__":

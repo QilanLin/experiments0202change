@@ -6,6 +6,11 @@ import random
 from abc import ABC, abstractmethod
 from typing import Any
 
+try:
+    from transformers import AutoTokenizer
+except Exception:  # pragma: no cover - optional dependency fallback
+    AutoTokenizer = None  # type: ignore
+
 from .config import ASSET_TICKERS, EXPERIMENT_CONFIG
 from .lmstudio_openai_chat import LMStudioOpenAIChat
 from tradingagents_tsfm_modified_v5.tradingagents.llms.local_qwen import LocalQwenChat
@@ -39,6 +44,69 @@ def _approximate_input_tokens(messages: Any) -> tuple[int, str]:
     # LM Studio/OpenAI 兼容路径拿不到底层 tokenizer 时，退化成字符近似。
     payload = json.dumps(messages, ensure_ascii=False, default=str)
     return max(1, math.ceil(len(payload) / 4)), "approx_chars_div4"
+
+
+_HF_TOKEN_COUNTERS: dict[str, Any] = {}
+
+
+def _normalize_messages_for_token_count(messages: Any) -> Any:
+    if isinstance(messages, dict) and "messages" in messages:
+        messages = messages["messages"]
+
+    if not isinstance(messages, list):
+        return str(messages)
+
+    normalized = []
+    for item in messages:
+        if isinstance(item, dict):
+            normalized.append(
+                {
+                    "role": str(item.get("role", "user")),
+                    "content": str(item.get("content", "")),
+                }
+            )
+        else:
+            normalized.append({"role": "user", "content": str(item)})
+    return normalized
+
+
+def _try_build_hf_token_counter(model_name: str):
+    if AutoTokenizer is None:
+        return None
+
+    if model_name in _HF_TOKEN_COUNTERS:
+        return _HF_TOKEN_COUNTERS[model_name]
+
+    try:
+        tokenizer = AutoTokenizer.from_pretrained(
+            model_name,
+            trust_remote_code=True,
+            local_files_only=True,
+        )
+    except Exception:
+        _HF_TOKEN_COUNTERS[model_name] = None
+        return None
+
+    def _counter(messages: Any) -> int | None:
+        normalized = _normalize_messages_for_token_count(messages)
+        try:
+            if (
+                isinstance(normalized, list)
+                and hasattr(tokenizer, "apply_chat_template")
+            ):
+                prompt = tokenizer.apply_chat_template(
+                    normalized,
+                    tokenize=False,
+                    add_generation_prompt=True,
+                )
+                return len(tokenizer(prompt, add_special_tokens=False)["input_ids"])
+            payload = json.dumps(normalized, ensure_ascii=False, default=str)
+            return len(tokenizer(payload, add_special_tokens=False)["input_ids"])
+        except Exception:
+            return None
+
+    _HF_TOKEN_COUNTERS[model_name] = _counter
+    return _counter
 
 
 class MockLLMClient(BaseLLMClient):
@@ -118,11 +186,16 @@ class LMStudioLLMClient(BaseLLMClient):
             max_tokens=max_new_tokens,
         )
         self.input_token_budget = input_token_budget
+        self._token_counter = _try_build_hf_token_counter(model_name)
 
     def invoke(self, messages: Any) -> Any:
         return self._client.invoke(messages)
 
     def _estimate_input_tokens(self, messages: Any) -> tuple[int | None, str]:
+        if self._token_counter is not None:
+            counted = self._token_counter(messages)
+            if counted is not None:
+                return counted, "hf_tokenizer"
         return _approximate_input_tokens(messages)
 
 
