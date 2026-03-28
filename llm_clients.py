@@ -79,11 +79,13 @@ class QwenLLMClient(BaseLLMClient):
         self,
         model_name: str,
         temperature: float = 0.0,
+        max_new_tokens: int = 1024,
         input_token_budget: int | None = None,
     ):
         self._client = LocalQwenChat(
             model_name=model_name,
             temperature=temperature,
+            max_tokens=max_new_tokens,
         )
         self.input_token_budget = input_token_budget
 
@@ -105,6 +107,7 @@ class LMStudioLLMClient(BaseLLMClient):
         base_url: str,
         api_key: str | None = None,
         temperature: float = 0.0,
+        max_new_tokens: int = 1024,
         input_token_budget: int | None = None,
     ):
         self._client = LMStudioOpenAIChat(
@@ -112,6 +115,7 @@ class LMStudioLLMClient(BaseLLMClient):
             base_url=base_url,
             api_key=api_key,
             temperature=temperature,
+            max_tokens=max_new_tokens,
         )
         self.input_token_budget = input_token_budget
 
@@ -139,6 +143,7 @@ def build_llm_client(debug: bool, use_mock_llm: bool = False) -> BaseLLMClient:
         return QwenLLMClient(
             model_name=llm_model,
             temperature=0.0,
+            max_new_tokens=int(EXPERIMENT_CONFIG.get("llm_max_new_tokens") or 1024),
             input_token_budget=EXPERIMENT_CONFIG.get("llm_input_token_budget"),
         )
 
@@ -147,5 +152,6 @@ def build_llm_client(debug: bool, use_mock_llm: bool = False) -> BaseLLMClient:
         base_url=EXPERIMENT_CONFIG["lmstudio_base_url"],
         api_key=EXPERIMENT_CONFIG.get("lmstudio_api_key"),
         temperature=0.0,
+        max_new_tokens=int(EXPERIMENT_CONFIG.get("llm_max_new_tokens") or 1024),
         input_token_budget=EXPERIMENT_CONFIG.get("llm_input_token_budget"),
     )

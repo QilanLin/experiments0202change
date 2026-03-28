@@ -40,9 +40,10 @@ EXPERIMENT_CONFIG = {
     "debug_llm": os.getenv("QWEN_DEBUG_MODEL", "Qwen/Qwen3-4B-Instruct-2507"),
     "production_llm": os.getenv("QWEN_PRODUCTION_MODEL", "Qwen/Qwen3-30B-A3B-Instruct-2507"),
     "llm_provider": "qwen",
+    "llm_max_new_tokens": _read_optional_positive_int_env("LLM_MAX_NEW_TOKENS", 10240),
     "lmstudio_base_url": os.getenv("LM_STUDIO_BASE_URL", "http://127.0.0.1:1234/v1"),
     "lmstudio_api_key": os.getenv("LM_STUDIO_API_KEY"),
-    "llm_input_token_budget": _read_optional_positive_int_env("LLM_INPUT_TOKEN_BUDGET", 24000),
+    "llm_input_token_budget": _read_optional_positive_int_env("LLM_INPUT_TOKEN_BUDGET", 240000),
     
     # TSFM 配置
     "tsfm_model": "amazon/chronos-2",
