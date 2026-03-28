@@ -2,12 +2,12 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+RUNNER="${SCRIPT_DIR}/run_server_experiment.sh"
 
 # ===== 用户可改参数 =====
 END_DATE="2025-09-30"
 DAYS="30"
 MODEL="moirai2"
-PKG="experiments0124change.run_experiment"
 
 # 日志目录（自动创建）
 LOG_DIR="logs_moirai2_${END_DATE}"
@@ -44,11 +44,11 @@ for T in "${TYPES[@]}"; do
 
   echo "============================================================"
   echo "[INFO] Running: type=${T}  (log: ${LOG_FILE})"
-  echo "CMD: python -m ${PKG} --type ${T} --days ${DAYS} --end-date ${END_DATE} --model ${MODEL}"
+  echo "CMD: bash ${RUNNER} --type ${T} --days ${DAYS} --end-date ${END_DATE} --model ${MODEL}"
   echo "============================================================"
 
-  # 用 tee 同时输出到屏幕和日志
-  python -m "${PKG}" \
+  # 用统一 wrapper 固定服务器环境；timesfm 会自动注入官方 2.5 torch API。
+  bash "${RUNNER}" \
     --type "${T}" \
     --days "${DAYS}" \
     --end-date "${END_DATE}" \

@@ -10,6 +10,9 @@ Run Experiment - 实验运行主脚本
     python -m experiments0202change.run_experiment --type tsfm_3 --model toto
     python -m experiments0202change.run_experiment --type tsfm_7a --model chronos
     python -m experiments0202change.run_experiment --type tsfm_7b --model chronos
+
+服务器推荐：
+    bash run_server_experiment.sh --type tsfm_7a --model timesfm --start-date 2025-08-31 --end-date 2025-09-30
 """
 
 from __future__ import annotations

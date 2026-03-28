@@ -55,6 +55,26 @@ export ALPHA_VANTAGE_API_KEY=your_api_key_here
 
 ## 4. 运行实验
 
+### 4.0 TimesFM 服务器运行约束
+```bash
+# TimesFM 请统一走项目自带 wrapper。
+# 这样会自动固定：
+#   - 官方 timesfm_official/src
+#   - HF_HOME / HUGGINGFACE_HUB_CACHE
+#   - HF_HUB_OFFLINE / TRANSFORMERS_OFFLINE
+#
+# 目录约定：
+#   /root/private_data/experiments0202change
+#   /root/private_data/timesfm_official
+#
+# 示例：
+bash run_server_experiment.sh \
+  --type tsfm_7a \
+  --model timesfm \
+  --start-date 2025-08-31 \
+  --end-date 2025-09-30
+```
+
 ### 4.1 快速测试（验证环境）
 ```bash
 # 先用mock模式测试流程
