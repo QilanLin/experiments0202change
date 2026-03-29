@@ -202,13 +202,14 @@ class PriceRepositoryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             repo = PriceRepository(client=SimpleNamespace(), cache_dir=tmpdir)
             price_dir = Path(tmpdir) / "price"
-            exact_path = price_dir / "AAPL_plain_daily_2025-01-31_2026-01-31.csv"
+            exact_path = price_dir / "AAPL_adjusted_daily_2025-01-31_2026-01-31.csv"
             broad_path = price_dir / "AAPL_adjusted_2025-01-16_2026-01-16.csv"
 
             exact_df = pd.DataFrame(
                 {
                     "date": ["2025-10-15", "2026-01-02", "2026-01-31"],
-                    "close": [100.0, 101.0, 102.0],
+                    "close": [90.0, 91.0, 92.0],
+                    "adjusted_close": [100.0, 101.0, 102.0],
                 }
             )
             broad_df = pd.DataFrame(
@@ -280,8 +281,8 @@ class PriceRepositoryTests(unittest.TestCase):
             class FakeClient:
                 def make_request(self, params):
                     return (
-                        "timestamp,open,high,low,close,volume\n"
-                        "2026-03-27,10,11,9,10.5,1000\n"
+                        "timestamp,open,high,low,close,adjusted_close,volume\n"
+                        "2026-03-27,10,11,9,10.5,10.4,1000\n"
                     )
 
             repo = PriceRepository(client=FakeClient(), cache_dir=str(repo_cache_dir))
@@ -301,10 +302,29 @@ class PriceRepositoryTests(unittest.TestCase):
                 use_cache=True,
             )
 
-            exact_path = repo_cache_dir / "price" / "AAPL_plain_daily_2024-09-30_2025-09-30.csv"
+            exact_path = repo_cache_dir / "price" / "AAPL_adjusted_daily_2024-09-30_2025-09-30.csv"
             self.assertEqual(len(loaded), 2)
             self.assertListEqual(loaded["close"].tolist(), [300.0, 301.0])
             self.assertFalse(exact_path.exists())
+
+    def test_plain_cache_is_not_used_under_adjusted_only_protocol(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = PriceRepository(client=SimpleNamespace(), cache_dir=tmpdir)
+            plain_path = Path(tmpdir) / "price" / "AAPL_plain_daily_2025-01-31_2026-01-31.csv"
+            pd.DataFrame(
+                {
+                    "date": ["2026-01-31"],
+                    "close": [101.0],
+                }
+            ).to_csv(plain_path, index=False)
+
+            with self.assertRaises(Exception):
+                repo.get_daily_prices(
+                    "AAPL",
+                    start_date="2025-01-31",
+                    end_date="2026-01-31",
+                    use_cache=True,
+                )
 
 
 class FundamentalsRepositoryTests(unittest.TestCase):
@@ -476,6 +496,40 @@ class PortfolioSimulatorTests(unittest.TestCase):
 
         self.assertIn("MSFT", str(ctx.exception))
         self.assertIn("2025-01-02", str(ctx.exception))
+
+    def test_simulator_excludes_unmeasurable_first_day_from_metric_period_count(self) -> None:
+        price_data = {}
+        for ticker in portfolio_models_mod.MAG7_TICKERS:
+            closes = [100.0, 110.0] if ticker == "AAPL" else [100.0, 100.0]
+            price_data[ticker] = pd.DataFrame(
+                {
+                    "date": pd.to_datetime(["2025-01-02", "2025-01-03"]),
+                    "close": closes,
+                }
+            )
+
+        simulator = PortfolioSimulator(initial_capital=1_000_000, rebalance_frequency="daily")
+        result = simulator.run(
+            experiment_type="baseline_llm_only",
+            price_data=price_data,
+            decision_func=lambda date, state, **kwargs: PortfolioDecision(
+                decision_date=date,
+                weights={**{t: 1 / 7 for t in portfolio_models_mod.MAG7_TICKERS}, "CASH": 0.0},
+                action="hold",
+                reasoning="test",
+                confidence=1.0,
+                raw_llm_output="{}",
+            ),
+            start_date="2025-01-02",
+            end_date="2025-01-03",
+        )
+
+        expected_total_return = (1.1 - 1.0) / 7.0
+        expected_annualized = (1 + expected_total_return) ** 252 - 1
+
+        self.assertAlmostEqual(result.daily_snapshots[0].daily_return, 0.0)
+        self.assertAlmostEqual(result.total_return, expected_total_return)
+        self.assertAlmostEqual(result.annualized_return, expected_annualized)
 
 
 class SimulationResultTests(unittest.TestCase):

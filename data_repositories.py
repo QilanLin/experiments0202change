@@ -47,6 +47,8 @@ class PriceRepository(CachedRepository):
     """价格数据仓储：本地缓存 + API 回退。"""
 
     RATE_LIMIT_DELAY = 1
+    PRICE_SERIES_FUNCTION = "TIME_SERIES_DAILY_ADJUSTED"
+    CACHE_SUFFIX_KIND = "adjusted_daily"
 
     def __init__(self, client: AlphaVantageClient, cache_dir: str):
         super().__init__(cache_dir, "price")
@@ -61,7 +63,12 @@ class PriceRepository(CachedRepository):
                 dirs.append(shared_price_dir)
         return dirs
 
-    def _normalize_price_cache_df(self, df: pd.DataFrame) -> Optional[pd.DataFrame]:
+    def _normalize_price_cache_df(
+        self,
+        df: pd.DataFrame,
+        *,
+        require_adjusted: bool = False,
+    ) -> Optional[pd.DataFrame]:
         if df is None or df.empty:
             return None
 
@@ -80,14 +87,20 @@ class PriceRepository(CachedRepository):
         if normalized.empty:
             return None
 
+        has_adjusted = False
         if "adjusted_close" in normalized.columns:
+            has_adjusted = True
             if "close" in normalized.columns:
                 normalized["raw_close"] = normalized["close"].copy()
             normalized["close"] = normalized["adjusted_close"].copy()
         elif "adjusted close" in normalized.columns:
+            has_adjusted = True
             if "close" in normalized.columns:
                 normalized["raw_close"] = normalized["close"].copy()
             normalized["close"] = normalized["adjusted close"].copy()
+
+        if require_adjusted and not has_adjusted:
+            return None
 
         if "close" not in normalized.columns:
             return None
@@ -101,7 +114,12 @@ class PriceRepository(CachedRepository):
         normalized = normalized.sort_values("date").reset_index(drop=True)
         return normalized
 
-    def _load_exact_cache_snapshot(self, cache_path: str) -> Optional[pd.DataFrame]:
+    def _load_exact_cache_snapshot(
+        self,
+        cache_path: str,
+        *,
+        require_adjusted: bool = False,
+    ) -> Optional[pd.DataFrame]:
         """优先复用请求对应的精确缓存快照。
 
         对回测来说，历史价格文件一旦落盘，本身就是一个固定输入快照；这里即使
@@ -112,7 +130,10 @@ class PriceRepository(CachedRepository):
             return None
 
         try:
-            normalized = self._normalize_price_cache_df(pd.read_csv(cache_path))
+            normalized = self._normalize_price_cache_df(
+                pd.read_csv(cache_path),
+                require_adjusted=require_adjusted,
+            )
         except Exception:
             return None
         return normalized
@@ -122,6 +143,8 @@ class PriceRepository(CachedRepository):
         ticker: str,
         start_date: str,
         end_date: str,
+        *,
+        require_adjusted: bool = False,
     ) -> Optional[pd.DataFrame]:
         start_dt = pd.to_datetime(start_date)
         end_dt = pd.to_datetime(end_date)
@@ -137,7 +160,10 @@ class PriceRepository(CachedRepository):
                     continue
                 seen_paths.add(cache_path)
                 try:
-                    normalized = self._normalize_price_cache_df(pd.read_csv(cache_file))
+                    normalized = self._normalize_price_cache_df(
+                        pd.read_csv(cache_file),
+                        require_adjusted=require_adjusted,
+                    )
                 except Exception:
                     continue
                 if normalized is None or normalized.empty:
@@ -198,27 +224,52 @@ class PriceRepository(CachedRepository):
             start_dt = end_dt - timedelta(days=lookback_days)
             start_date = start_dt.strftime("%Y-%m-%d")
 
-        cache_path = self.get_cache_path(ticker, f"_plain_daily_{start_date}_{end_date}")
+        cache_path = self.get_cache_path(
+            ticker,
+            f"_{self.CACHE_SUFFIX_KIND}_{start_date}_{end_date}",
+        )
+        legacy_plain_cache_path = self.get_cache_path(
+            ticker,
+            f"_plain_daily_{start_date}_{end_date}",
+        )
 
         if use_cache:
             cached = self.load_from_cache(cache_path)
             normalized_cached = (
-                self._normalize_price_cache_df(cached)
+                self._normalize_price_cache_df(cached, require_adjusted=True)
                 if isinstance(cached, pd.DataFrame)
                 else None
             )
             if normalized_cached is not None:
                 return normalized_cached
-            exact_snapshot = self._load_exact_cache_snapshot(cache_path)
+            exact_snapshot = self._load_exact_cache_snapshot(
+                cache_path,
+                require_adjusted=True,
+            )
             if exact_snapshot is not None:
                 print(f"  Using exact cached prices for {ticker} from {cache_path}")
                 return exact_snapshot
-            best_local_cache = self._load_best_local_price_cache(ticker, start_date, end_date)
+            legacy_adjusted_snapshot = self._load_exact_cache_snapshot(
+                legacy_plain_cache_path,
+                require_adjusted=True,
+            )
+            if legacy_adjusted_snapshot is not None:
+                print(
+                    f"  Using legacy adjusted cached prices for {ticker} "
+                    f"from {legacy_plain_cache_path}"
+                )
+                return legacy_adjusted_snapshot
+            best_local_cache = self._load_best_local_price_cache(
+                ticker,
+                start_date,
+                end_date,
+                require_adjusted=True,
+            )
             if best_local_cache is not None:
                 return best_local_cache
 
         params = {
-            "function": "TIME_SERIES_DAILY",
+            "function": self.PRICE_SERIES_FUNCTION,
             "symbol": ticker,
             "outputsize": "compact",
             "datatype": "csv",
@@ -229,14 +280,19 @@ class PriceRepository(CachedRepository):
         except Exception:
             stale_cached = self.load_from_cache(cache_path, allow_stale=True) if use_cache else None
             normalized_stale = (
-                self._normalize_price_cache_df(stale_cached)
+                self._normalize_price_cache_df(stale_cached, require_adjusted=True)
                 if isinstance(stale_cached, pd.DataFrame)
                 else None
             )
             if normalized_stale is not None:
                 print(f"  Falling back to stale price cache for {ticker}")
                 return normalized_stale
-            best_local_cache = self._load_best_local_price_cache(ticker, start_date, end_date)
+            best_local_cache = self._load_best_local_price_cache(
+                ticker,
+                start_date,
+                end_date,
+                require_adjusted=True,
+            )
             if best_local_cache is not None:
                 return best_local_cache
             raise
@@ -256,8 +312,11 @@ class PriceRepository(CachedRepository):
                 df["raw_close"] = df["close"].copy()
             df["close"] = df["adjusted close"].copy()
             df = df.drop(columns=["adjusted close"])
-        elif "close" in df.columns:
-            df["raw_close"] = df["close"].copy()
+        else:
+            raise ValueError(
+                f"Adjusted close is required for {ticker}, but source columns were "
+                f"{df.columns.tolist()}"
+            )
 
         if "timestamp" in df.columns:
             df["timestamp"] = pd.to_datetime(df["timestamp"])
@@ -274,7 +333,12 @@ class PriceRepository(CachedRepository):
         df = df.sort_values(date_col).reset_index(drop=True)
 
         if df.empty:
-            best_local_cache = self._load_best_local_price_cache(ticker, start_date, end_date)
+            best_local_cache = self._load_best_local_price_cache(
+                ticker,
+                start_date,
+                end_date,
+                require_adjusted=True,
+            )
             if best_local_cache is not None:
                 print(f"  Falling back to local cached prices for {ticker} after empty API slice")
                 return best_local_cache

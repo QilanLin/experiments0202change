@@ -160,7 +160,10 @@ class PerformanceCalculator:
     ) -> Dict[str, float]:
         returns = np.array(daily_returns)
         total_return = (final_value - initial_capital) / initial_capital
-        annualized_return = (1 + total_return) ** (252 / max(num_days, 1)) - 1
+        if num_days > 0:
+            annualized_return = (1 + total_return) ** (252 / num_days) - 1
+        else:
+            annualized_return = 0.0
 
         if len(returns) > 1 and np.std(returns) > 0:
             excess_returns = returns - self.risk_free_rate / 252

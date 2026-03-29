@@ -92,7 +92,9 @@ class PortfolioSimulator:
         all_decisions = []
         llm_outputs = []
         daily_returns = []
-        prev_value = self.initial_capital
+        prev_value = (
+            current_state.total_value if initial_context_date != trading_days[0] else None
+        )
         
         for i, date in enumerate(trading_days):
             execution_prices = {
@@ -116,8 +118,11 @@ class PortfolioSimulator:
 
             # 计算当日收益（按当日执行价 mark-to-market，再决定是否调仓）
             current_value = execution_state.total_value
-            daily_return = (current_value - prev_value) / prev_value if prev_value > 0 else 0
-            daily_returns.append(daily_return)
+            if prev_value is None:
+                daily_return = 0.0
+            else:
+                daily_return = (current_value - prev_value) / prev_value if prev_value > 0 else 0
+                daily_returns.append(daily_return)
             prev_value = current_value
             
             # 是否需要再平衡
@@ -183,7 +188,7 @@ class PortfolioSimulator:
         # 计算最终指标
         final_value = current_state.total_value
         metrics = self.performance_calculator.calculate(
-            daily_returns, self.initial_capital, final_value, len(trading_days)
+            daily_returns, self.initial_capital, final_value, len(daily_returns)
         )
         
         return SimulationResult(
