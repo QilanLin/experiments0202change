@@ -344,8 +344,18 @@ class ExperimentRunner:
             trading_days = self.trading_calendar.get_trading_days(
                 start_date, end_date, self._price_data
             )
-            print(f"[STAGE] Generating TSFM forecasts for {len(trading_days)} trading days", flush=True)
-            for date in trading_days:
+            forecast_days = list(trading_days)
+            if trading_days:
+                previous_day = self.trading_calendar.get_previous_trading_day(
+                    trading_days[0], self._price_data
+                )
+                if previous_day is not None:
+                    forecast_days.insert(0, previous_day)
+            print(
+                f"[STAGE] Generating TSFM forecasts for {len(forecast_days)} trading days",
+                flush=True,
+            )
+            for date in forecast_days:
                 self.generate_tsfm_forecasts(date)
             print("[STAGE] Finished generating TSFM forecasts", flush=True)
         

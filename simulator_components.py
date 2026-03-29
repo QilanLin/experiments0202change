@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -35,6 +35,27 @@ class TradingCalendar:
         trading_days = dates[mask].sort_values()
         return [d.strftime("%Y-%m-%d") for d in trading_days]
 
+    def get_previous_trading_day(
+        self,
+        date: str,
+        price_data: Dict[str, pd.DataFrame],
+    ) -> Optional[str]:
+        first_ticker = list(price_data.keys())[0]
+        df = price_data[first_ticker]
+
+        if 'date' in df.columns:
+            dates = pd.to_datetime(df['date'])
+        elif 'timestamp' in df.columns:
+            dates = pd.to_datetime(df['timestamp'])
+        else:
+            dates = pd.to_datetime(df.index)
+
+        target_dt = pd.to_datetime(date)
+        previous_days = dates[dates < target_dt].sort_values()
+        if len(previous_days) == 0:
+            return None
+        return previous_days.iloc[-1].strftime("%Y-%m-%d")
+
 
 class PriceProvider:
     """负责按日期读取单只股票价格。"""
@@ -60,8 +81,9 @@ class PriceProvider:
 
         row = df[df[date_col] == target_date]
         if len(row) == 0:
-            df_sorted = df.sort_values(date_col)
-            row = df_sorted[df_sorted[date_col] <= target_date].iloc[-1:]
+            raise ValueError(
+                f"Missing exact price for {ticker} on trading day {date}"
+            )
 
         if 'adjusted_close' in df.columns:
             return float(row['adjusted_close'].iloc[0])

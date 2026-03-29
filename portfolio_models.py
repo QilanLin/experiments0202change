@@ -52,12 +52,27 @@ class PortfolioState:
         )
         return self.cash + position_value
 
+    @property
+    def actual_weights(self) -> Dict[str, float]:
+        total = self.total_value
+        if total <= 0:
+            weights = {t: 0.0 for t in MAG7_TICKERS}
+            weights[CASH_TICKER] = 0.0
+            return weights
+
+        weights = {
+            t: (self.positions.get(t, 0) * self.prices.get(t, 0)) / total
+            for t in MAG7_TICKERS
+        }
+        weights[CASH_TICKER] = self.cash / total
+        return weights
+
     def to_dict(self) -> Dict[str, Any]:
         return {
             "date": self.date,
             "cash": self.cash,
             "positions": self.positions,
             "prices": self.prices,
-            "weights": self.weights,
+            "weights": self.actual_weights,
             "total_value": self.total_value,
         }

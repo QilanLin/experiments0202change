@@ -22,12 +22,20 @@ class DailyDecisionPipeline:
         self.artifact_store = artifact_store
         self.debug = debug
 
-    def __call__(self, date: str, state: PortfolioState) -> PortfolioDecision:
+    def __call__(
+        self,
+        date: str,
+        state: PortfolioState,
+        *,
+        asof_date: str | None = None,
+    ) -> PortfolioDecision:
         print(f"[STAGE] Starting LLM decision for {date}", flush=True)
 
-        context = self.market_context_provider.build(date, state)
+        context_date = asof_date or date
+        context = self.market_context_provider.build(context_date, state)
         prepared_request = self.portfolio_agent.prepare_request(
             current_date=date,
+            asof_date=context_date,
             fundamentals=context.fundamentals,
             price_history=context.price_history,
             tsfm_forecasts=context.tsfm_forecasts,
@@ -35,6 +43,7 @@ class DailyDecisionPipeline:
         )
         llm_input_payload = {
             "decision_date": date,
+            "market_context_asof_date": context_date,
             "market_context": context.to_dict(),
             "messages": prepared_request["messages"],
             "prompt": prepared_request["prompt"],

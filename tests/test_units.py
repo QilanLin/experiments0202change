@@ -44,6 +44,7 @@ timesfm_forecaster_mod = load_module("timesfm_forecaster")
 
 AlphaVantageLoader = data_loader_mod.AlphaVantageLoader
 PriceRepository = data_repositories_mod.PriceRepository
+FundamentalsRepository = data_repositories_mod.FundamentalsRepository
 ArtifactStore = artifact_store_mod.ArtifactStore
 DailyDecisionPipeline = daily_decision_pipeline_mod.DailyDecisionPipeline
 DecisionParser = decision_parser_mod.DecisionParser
@@ -81,10 +82,12 @@ PortfolioWeightAgent = portfolio_agent_mod.PortfolioWeightAgent
 PortfolioDecision = portfolio_models_mod.PortfolioDecision
 PortfolioState = portfolio_models_mod.PortfolioState
 TradingCalendar = simulator_components_mod.TradingCalendar
+PriceProvider = simulator_components_mod.PriceProvider
 SimulationResult = simulator_models_mod.SimulationResult
 ChronosBackend = tsfm_backends_mod.ChronosBackend
 TSFMForecaster = load_module("tsfm_forecaster").TSFMForecaster
 TSFMForecast = load_module("tsfm_forecaster").TSFMForecast
+PortfolioSimulator = load_module("simulator").PortfolioSimulator
 validate_timesfm_quantiles_strict = timesfm_forecaster_mod._validate_requested_quantiles_strict
 validate_legacy_timesfm_device = timesfm_forecaster_mod._validate_legacy_timesfm_device
 pad_array_left_to_multiple = timesfm_forecaster_mod._pad_array_left_to_multiple
@@ -304,6 +307,46 @@ class PriceRepositoryTests(unittest.TestCase):
             self.assertFalse(exact_path.exists())
 
 
+class FundamentalsRepositoryTests(unittest.TestCase):
+    def test_get_simple_fundamentals_asof_does_not_fallback_to_future_reports(self) -> None:
+        repo = FundamentalsRepository(client=SimpleNamespace(), cache_dir=tempfile.mkdtemp())
+        repo.get_income_statement = MethodType(
+            lambda self, ticker, use_cache=True: {
+                "quarterlyReports": [
+                    {
+                        "fiscalDateEnding": "2025-03-31",
+                        "totalRevenue": "1000",
+                        "grossProfit": "500",
+                        "netIncome": "250",
+                    }
+                ]
+            },
+            repo,
+        )
+        repo.get_balance_sheet = MethodType(
+            lambda self, ticker, use_cache=True: {
+                "quarterlyReports": [
+                    {
+                        "fiscalDateEnding": "2025-03-31",
+                        "totalAssets": "2000",
+                        "totalLiabilities": "800",
+                    }
+                ]
+            },
+            repo,
+        )
+
+        snapshot = repo.get_simple_fundamentals_asof(
+            ticker="AAPL",
+            asof_date="2025-04-10",
+            lag_days=45,
+        )
+
+        self.assertIsNone(snapshot["fiscalDateEnding"])
+        self.assertIsNone(snapshot["totalRevenue"])
+        self.assertIsNone(snapshot["totalAssets"])
+
+
 class TradingCalendarTests(unittest.TestCase):
     def test_get_trading_days_returns_sorted_dates_in_range(self) -> None:
         calendar = TradingCalendar()
@@ -325,6 +368,114 @@ class TradingCalendarTests(unittest.TestCase):
         )
 
         self.assertEqual(trading_days, ["2025-10-03", "2025-10-06"])
+
+    def test_get_previous_trading_day_returns_latest_day_before_target(self) -> None:
+        calendar = TradingCalendar()
+        price_data = {
+            "AAPL": pd.DataFrame(
+                {
+                    "date": pd.to_datetime(
+                        ["2025-10-01", "2025-10-03", "2025-10-06", "2025-10-08"]
+                    ),
+                    "close": [100.0, 101.0, 103.0, 104.0],
+                }
+            )
+        }
+
+        previous_day = calendar.get_previous_trading_day("2025-10-07", price_data)
+
+        self.assertEqual(previous_day, "2025-10-06")
+
+
+class PortfolioSimulatorTests(unittest.TestCase):
+    def test_simulator_decision_uses_previous_trading_day_state_and_actual_weights(self) -> None:
+        price_data = {}
+        for ticker in portfolio_models_mod.MAG7_TICKERS:
+            closes = [100.0, 110.0, 110.0] if ticker == "AAPL" else [100.0, 100.0, 100.0]
+            price_data[ticker] = pd.DataFrame(
+                {
+                    "date": pd.to_datetime(["2025-01-01", "2025-01-02", "2025-01-03"]),
+                    "close": closes,
+                }
+            )
+
+        seen: list[tuple[str, str | None, str, float, float]] = []
+
+        def decision_func(date, state, *, asof_date=None):
+            seen.append(
+                (
+                    date,
+                    asof_date,
+                    state.date,
+                    state.prices["AAPL"],
+                    state.actual_weights["AAPL"],
+                )
+            )
+            weights = {t: 1 / 7 for t in portfolio_models_mod.MAG7_TICKERS}
+            weights["CASH"] = 0.0
+            return PortfolioDecision(
+                decision_date=date,
+                weights=weights,
+                action="hold",
+                reasoning="test",
+                confidence=1.0,
+                raw_llm_output="{}",
+            )
+
+        simulator = PortfolioSimulator(initial_capital=1_000_000, rebalance_frequency="daily")
+        result = simulator.run(
+            experiment_type="baseline_llm_only",
+            price_data=price_data,
+            decision_func=decision_func,
+            start_date="2025-01-02",
+            end_date="2025-01-03",
+        )
+
+        self.assertEqual(
+            seen,
+            [
+                ("2025-01-02", "2025-01-01", "2025-01-01", 100.0, 1 / 7),
+                ("2025-01-03", "2025-01-02", "2025-01-02", 110.0, 110.0 / (110.0 + 6 * 100.0)),
+            ],
+        )
+        self.assertAlmostEqual(result.daily_snapshots[0].daily_return, (1.1 - 1.0) / 7.0)
+        self.assertAlmostEqual(result.daily_snapshots[1].weights["AAPL"], 110.0 / (110.0 + 6 * 100.0))
+
+    def test_simulator_raises_when_any_ticker_is_missing_price_on_trading_day(self) -> None:
+        price_data = {}
+        for ticker in portfolio_models_mod.MAG7_TICKERS:
+            dates = ["2025-01-01", "2025-01-02"]
+            closes = [100.0, 101.0]
+            if ticker == "MSFT":
+                dates = ["2025-01-01"]
+                closes = [100.0]
+            price_data[ticker] = pd.DataFrame(
+                {
+                    "date": pd.to_datetime(dates),
+                    "close": closes,
+                }
+            )
+
+        simulator = PortfolioSimulator(initial_capital=1_000_000, rebalance_frequency="daily")
+
+        with self.assertRaises(ValueError) as ctx:
+            simulator.run(
+                experiment_type="baseline_llm_only",
+                price_data=price_data,
+                decision_func=lambda date, state, **kwargs: PortfolioDecision(
+                    decision_date=date,
+                    weights={**{t: 1 / 7 for t in portfolio_models_mod.MAG7_TICKERS}, "CASH": 0.0},
+                    action="hold",
+                    reasoning="test",
+                    confidence=1.0,
+                    raw_llm_output="{}",
+                ),
+                start_date="2025-01-02",
+                end_date="2025-01-02",
+            )
+
+        self.assertIn("MSFT", str(ctx.exception))
+        self.assertIn("2025-01-02", str(ctx.exception))
 
 
 class SimulationResultTests(unittest.TestCase):
@@ -1134,7 +1285,7 @@ class MarketContextProviderTests(unittest.TestCase):
             debug=debug,
         )
 
-    def test_build_trims_price_history_and_adds_cash_weight(self) -> None:
+    def test_build_trims_price_history_and_uses_actual_portfolio_weights(self) -> None:
         provider = self._build_provider()
         state = PortfolioState(
             date="2025-01-03",
@@ -1150,7 +1301,9 @@ class MarketContextProviderTests(unittest.TestCase):
         self.assertEqual(context.fundamentals_metadata["AAPL"]["status"], "ok")
         self.assertEqual(context.price_history["AAPL"], [100.0, 101.0, 102.0])
         self.assertEqual(context.tsfm_forecasts["AAPL"], "rendered-aapl")
-        self.assertEqual(context.current_weights["CASH"], 0.0)
+        self.assertAlmostEqual(context.current_weights["AAPL"], 102.0 / 404.0)
+        self.assertAlmostEqual(context.current_weights["MSFT"], 202.0 / 404.0)
+        self.assertAlmostEqual(context.current_weights["CASH"], 100.0 / 404.0)
 
     def test_build_raises_when_debug_detects_future_prices(self) -> None:
         provider = self._build_provider(

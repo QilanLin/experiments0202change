@@ -25,14 +25,16 @@ class PromptBuilder:
         price_history: Dict[str, Any],
         tsfm_forecasts: Optional[Dict[str, str]] = None,
         current_weights: Optional[Dict[str, float]] = None,
+        asof_date: Optional[str] = None,
     ) -> Dict[str, str | None]:
         """构建结构化上下文 sections，供渲染和截断复用。"""
-        prefix = "\n".join(
-            [
-                f"Date: {current_date}",
-                f"Current Portfolio Weights: {json.dumps(current_weights or self._default_weights())}",
-            ]
+        prefix_lines = [f"Date: {current_date}"]
+        if asof_date and asof_date != current_date:
+            prefix_lines.append(f"Market Data As Of: {asof_date}")
+        prefix_lines.append(
+            f"Current Portfolio Weights: {json.dumps(current_weights or self._default_weights())}"
         )
+        prefix = "\n".join(prefix_lines)
 
         fundamentals_parts: list[str] = []
         for ticker in MAG7_TICKERS:
@@ -102,10 +104,12 @@ class PromptBuilder:
         price_history: Dict[str, Any],
         tsfm_forecasts: Optional[Dict[str, str]] = None,
         current_weights: Optional[Dict[str, float]] = None,
+        asof_date: Optional[str] = None,
     ) -> str:
         """构建 LLM 输入上下文。"""
         sections = self.build_context_sections(
             current_date=current_date,
+            asof_date=asof_date,
             fundamentals=fundamentals,
             price_history=price_history,
             tsfm_forecasts=tsfm_forecasts,

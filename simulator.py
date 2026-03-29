@@ -59,10 +59,14 @@ class PortfolioSimulator:
         
         if len(trading_days) == 0:
             raise ValueError(f"No trading days found between {start_date} and {end_date}")
-        
-        # 初始化：MAG7 等权 + CASH=0
+
+        # 初始化：组合状态固定在首个执行日之前的最近一个交易日。
+        # 这样每日决策只会看到前一交易日信息，不会出现“看完当天收盘再按当天收盘交易”。
+        initial_context_date = self.trading_calendar.get_previous_trading_day(
+            trading_days[0], price_data
+        ) or trading_days[0]
         initial_prices = {
-            t: self.price_provider.get_price(t, trading_days[0], price_data)
+            t: self.price_provider.get_price(t, initial_context_date, price_data)
             for t in MAG7_TICKERS
         }
         initial_weights = {t: 1/7 for t in MAG7_TICKERS}
@@ -75,7 +79,7 @@ class PortfolioSimulator:
             initial_positions[ticker] = target_value / initial_prices[ticker]
         
         current_state = PortfolioState(
-            date=trading_days[0],
+            date=initial_context_date,
             cash=0,  # 初始现金为0（全部投资）
             positions=initial_positions,
             prices=initial_prices,
@@ -91,22 +95,27 @@ class PortfolioSimulator:
         prev_value = self.initial_capital
         
         for i, date in enumerate(trading_days):
-            # 更新价格
-            prices = {
+            execution_prices = {
                 t: self.price_provider.get_price(t, date, price_data)
                 for t in MAG7_TICKERS
             }
-            current_state.prices = prices
-            current_state.date = date
-            
+
+            execution_state = PortfolioState(
+                date=date,
+                cash=current_state.cash,
+                positions=current_state.positions.copy(),
+                prices=execution_prices,
+                weights=current_state.actual_weights,
+            )
+
             # 现金计息（如果启用）
-            if self.cash_interest and current_state.cash > 0:
+            if self.cash_interest and execution_state.cash > 0:
                 # 每日利率 = (1 + 年化利率)^(1/252) - 1
                 daily_rate = (1 + self.risk_free_rate) ** (1/252) - 1
-                current_state.cash *= (1 + daily_rate)
-            
-            # 计算当日收益
-            current_value = current_state.total_value
+                execution_state.cash *= (1 + daily_rate)
+
+            # 计算当日收益（按当日执行价 mark-to-market，再决定是否调仓）
+            current_value = execution_state.total_value
             daily_return = (current_value - prev_value) / prev_value if prev_value > 0 else 0
             daily_returns.append(daily_return)
             prev_value = current_value
@@ -117,14 +126,15 @@ class PortfolioSimulator:
                 (self.rebalance_frequency == "weekly" and i % 5 == 0)
             )
             
-            if should_rebalance:
+            if should_rebalance and current_state.date != date:
                 # 获取决策
-                decision = decision_func(date, current_state)
+                decision = decision_func(date, current_state, asof_date=current_state.date)
                 all_decisions.append(decision)
                 
                 # 保存LLM输出
                 llm_outputs.append({
                     "date": date,
+                    "market_context_asof_date": current_state.date,
                     "raw_output": decision.raw_llm_output,
                     "weights": decision.weights,
                     "reasoning": decision.reasoning,
@@ -132,18 +142,29 @@ class PortfolioSimulator:
                 
                 # 执行再平衡
                 if decision.action == "rebalance":
-                    current_state, trades = self.rebalance_engine.execute(
-                        current_state, decision.weights, prices
+                    execution_state, trades = self.rebalance_engine.execute(
+                        execution_state, decision.weights, execution_prices
                     )
                     all_trades.extend(trades)
                     
                     # 最小自检日志：确认 CASH 生效
-                    invested = sum(current_state.positions.get(t, 0) * prices.get(t, 0) for t in MAG7_TICKERS)
+                    invested = sum(
+                        execution_state.positions.get(t, 0) * execution_prices.get(t, 0)
+                        for t in MAG7_TICKERS
+                    )
                     print(f"[REBALANCE] Date: {date}")
                     print(f"  Invested: ${invested:,.2f}")
-                    print(f"  Cash: ${current_state.cash:,.2f}")
-                    print(f"  Total: ${current_state.total_value:,.2f}")
+                    print(f"  Cash: ${execution_state.cash:,.2f}")
+                    print(f"  Total: ${execution_state.total_value:,.2f}")
                     print(f"  CASH weight: {decision.weights.get(CASH_TICKER, 0):.4f}")
+
+            current_state = PortfolioState(
+                date=execution_state.date,
+                cash=execution_state.cash,
+                positions=execution_state.positions.copy(),
+                prices=execution_state.prices.copy(),
+                weights=execution_state.actual_weights,
+            )
             
             # 记录快照
             cumulative_return = (current_value - self.initial_capital) / self.initial_capital
@@ -152,8 +173,8 @@ class PortfolioSimulator:
                 portfolio_value=current_value,
                 cash=current_state.cash,
                 positions=current_state.positions.copy(),
-                prices=prices.copy(),
-                weights=current_state.weights.copy(),
+                prices=execution_prices.copy(),
+                weights=current_state.actual_weights.copy(),
                 daily_return=daily_return,
                 cumulative_return=cumulative_return,
             )

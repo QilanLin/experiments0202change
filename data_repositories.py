@@ -444,11 +444,6 @@ class FundamentalsRepository(CachedRepository):
         income_report = max(eligible_income, key=lambda x: x[0])[1] if eligible_income else None
         balance_report = max(eligible_balance, key=lambda x: x[0])[1] if eligible_balance else None
 
-        if income_report is None and "quarterlyReports" in income_statement and income_statement["quarterlyReports"]:
-            income_report = income_statement["quarterlyReports"][0]
-        if balance_report is None and "quarterlyReports" in balance_sheet and balance_sheet["quarterlyReports"]:
-            balance_report = balance_sheet["quarterlyReports"][0]
-
         snapshot: Dict[str, Any] = {}
         fiscal_date_ending = None
         if income_report:

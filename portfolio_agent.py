@@ -71,10 +71,12 @@ IMPORTANT: Weights MUST sum to 1.0 exactly. All 8 assets (7 stocks + CASH) must 
             price_history: Dict[str, Any],
             tsfm_forecasts: Optional[Dict[str, str]] = None,
             current_weights: Optional[Dict[str, float]] = None,
+            asof_date: Optional[str] = None,
     ) -> Dict[str, Any]:
         """构造给 LLM 的结构化输入。"""
         context_sections = self.prompt_builder.build_context_sections(
             current_date=current_date,
+            asof_date=asof_date,
             fundamentals=fundamentals,
             price_history=price_history,
             tsfm_forecasts=tsfm_forecasts,
@@ -98,6 +100,7 @@ IMPORTANT: Weights MUST sum to 1.0 exactly. All 8 assets (7 stocks + CASH) must 
         prompt_str = self.prompt_builder.format_prompt_for_saving(messages)
         return {
             "decision_date": current_date,
+            "market_context_asof_date": asof_date or current_date,
             "messages": messages,
             "prompt": prompt_str,
             "input_token_truncated": truncated,
@@ -351,10 +354,15 @@ IMPORTANT: Weights MUST sum to 1.0 exactly. All 8 assets (7 stocks + CASH) must 
             price_history: Dict[str, Any],
             tsfm_forecasts: Optional[Dict[str, str]] = None,
             current_weights: Optional[Dict[str, float]] = None,
+            asof_date: Optional[str] = None,
     ) -> PortfolioDecision:
         """做出权重决策"""
         prepared_request = self.prepare_request(
-            current_date, fundamentals, price_history,
-            tsfm_forecasts, current_weights
+            current_date=current_date,
+            fundamentals=fundamentals,
+            price_history=price_history,
+            tsfm_forecasts=tsfm_forecasts,
+            current_weights=current_weights,
+            asof_date=asof_date,
         )
         return self.decide_from_request(prepared_request)

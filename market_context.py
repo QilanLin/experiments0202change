@@ -137,7 +137,7 @@ class MarketContextProvider:
         return tsfm_forecasts or None
 
     def _build_current_weights(self, state: PortfolioState) -> Dict[str, float]:
-        current_weights = state.weights.copy()
+        current_weights = state.actual_weights.copy()
         if CASH_TICKER not in current_weights:
             current_weights[CASH_TICKER] = 0.0
         return current_weights
